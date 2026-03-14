@@ -109,6 +109,8 @@ enum Commands {
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
     },
+    /// Reload A3sfile.hcl without restarting unchanged services
+    Reload,
     /// Proxy to an a3s ecosystem tool (e.g. `a3s box`, `a3s gateway`)
     #[command(external_subcommand)]
     Tool(Vec<String>),
@@ -190,7 +192,7 @@ async fn run(cli: Cli) -> Result<()> {
             tokio::spawn(async move { proxy_run.run().await });
             println!("{} proxy  http://*.localhost:{}", "→".cyan(), proxy_port);
 
-            let (sup, _) = Supervisor::new(cfg.clone(), proxy);
+            let (sup, _) = Supervisor::new(cfg.clone(), proxy, cli.file.clone());
             let sup: Arc<Supervisor> = Arc::new(sup);
 
             tokio::spawn(supervisor::ipc::serve(sup.clone()));
@@ -230,13 +232,8 @@ async fn run(cli: Cli) -> Result<()> {
                         _ = sigterm.recv() => break,
                         _ = sighup.recv() => {
                             tracing::info!("SIGHUP received — reloading config");
-                            match DevConfig::from_file(&cli.file) {
-                                Ok(new_cfg) => {
-                                    if let Err(e) = sup.reload(Arc::new(new_cfg)).await {
-                                        tracing::error!("config reload failed: {e}");
-                                    }
-                                }
-                                Err(e) => tracing::error!("SIGHUP: bad config — {e}"),
+                            if let Err(e) = sup.reload_from_disk().await {
+                                tracing::error!("config reload failed: {e}");
                             }
                         }
                     }
@@ -385,6 +382,11 @@ async fn run(cli: Cli) -> Result<()> {
             })
             .await?;
             println!("{} restarted {}", "✓".green(), service.cyan());
+        }
+
+        Commands::Reload => {
+            ipc_send(IpcRequest::Reload).await?;
+            println!("{} config reloaded", "✓".green());
         }
 
         Commands::Logs { service, follow, grep, last } => {

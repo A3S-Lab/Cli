@@ -40,6 +40,11 @@ pub async fn spawn_process(spec: &SpawnSpec<'_>, log: &Arc<LogAggregator>) -> Re
         cmd.current_dir(dir);
     }
 
+    // Put the child in its own process group so SIGTERM/-SIGKILL reaches all
+    // descendant processes (e.g. `npm run dev` spawning node).
+    #[cfg(unix)]
+    cmd.process_group(0);
+
     let mut child = cmd.spawn().map_err(|e| DevError::Process {
         service: spec.name.to_string(),
         msg: e.to_string(),
@@ -53,6 +58,18 @@ pub async fn spawn_process(spec: &SpawnSpec<'_>, log: &Arc<LogAggregator>) -> Re
 
     if let Some(stderr) = child.stderr.take() {
         log.attach_stderr(spec.name.to_string(), spec.color_idx, stderr);
+    }
+
+    // Tee logs to file if configured
+    if let Some(log_path) = &spec.svc.log_file {
+        let resolved = if log_path.is_absolute() {
+            log_path.clone()
+        } else if let Some(dir) = &spec.svc.dir {
+            dir.join(log_path)
+        } else {
+            log_path.clone()
+        };
+        log.register_log_file(spec.name.to_string(), resolved);
     }
 
     Ok(SpawnResult { child, pid })

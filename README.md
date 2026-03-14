@@ -113,6 +113,7 @@ service "db" {
 | `a3s up --detach` | Start as background daemon |
 | `a3s down [services]` | Stop all (or named) services |
 | `a3s restart <service>` | Restart a service |
+| `a3s reload` | Reload A3sfile.hcl without restarting unchanged services |
 | `a3s status` | Show service status table |
 | `a3s logs [--service name]` | Tail logs (all or one service) |
 | `a3s logs --grep <keyword>` | Filter log output by keyword |
@@ -175,6 +176,8 @@ service "<name>" {
 
   env_file = ".env"      # Load variables from a .env file (optional)
                          # Variables in `env` take precedence over env_file
+  log_file = "logs/api.log"  # Append stdout/stderr to this file (optional)
+                             # Relative to A3sfile.hcl directory
 
   watch {                # Restart on file change (optional)
     paths   = ["./src"]
@@ -253,6 +256,10 @@ just fmt
 - [x] **Selective startup with dep resolution** — `a3s up api` automatically starts `db` (and any other transitive deps) in dependency order before `api`
 - [x] **`a3s logs --last N`** — configurable history line count (default 200); e.g. `a3s logs --last 50`
 - [x] **Supervisor unit tests** — lifecycle tests for start, stop, restart, start_all, start_named (78 tests total)
+- [x] **Process group killing** — services are spawned in their own process group; SIGTERM/-SIGKILL are sent to the entire group so wrapper commands (`npm run dev`, `cargo watch`) kill all child processes, not just the wrapper
+- [x] **`a3s reload`** — sends a reload request via IPC; equivalent to `kill -HUP` without needing the daemon PID; stops removed/disabled services, restarts changed, starts new
+- [x] **`a3s down <services>` stops dependents first** — `a3s down db` automatically stops `api` (and anything else that depends on db) in safe order before stopping db
+- [x] **`log_file` config option** — `log_file = "logs/api.log"` in a service block writes stdout/stderr to disk (append mode, relative to A3sfile.hcl directory); 81 tests total
 
 ## License
 

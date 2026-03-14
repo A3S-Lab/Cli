@@ -118,7 +118,8 @@ fn run_health_monitor(
                     if let Some(p) = pid {
                         use nix::sys::signal::{kill, Signal};
                         use nix::unistd::Pid;
-                        let _ = kill(Pid::from_raw(p as i32), Signal::SIGTERM);
+                        // Kill the process group so child processes die too
+                        let _ = kill(Pid::from_raw(-(p as i32)), Signal::SIGTERM);
                     }
                     // Exit — crash recovery owns the restart and will re-arm a new monitor.
                     break;
@@ -134,6 +135,8 @@ type ConfigCell = Arc<std::sync::RwLock<Arc<DevConfig>>>;
 
 pub struct Supervisor {
     config: ConfigCell,
+    /// Path to A3sfile.hcl — used by `reload_from_disk`.
+    config_path: std::path::PathBuf,
     handles: Arc<RwLock<HashMap<String, ServiceHandle>>>,
     events: broadcast::Sender<SupervisorEvent>,
     log: Arc<LogAggregator>,
@@ -144,6 +147,7 @@ impl Supervisor {
     pub fn new(
         config: Arc<DevConfig>,
         proxy: Arc<ProxyRouter>,
+        config_path: std::path::PathBuf,
     ) -> (Self, broadcast::Receiver<SupervisorEvent>) {
         let (events, rx) = broadcast::channel(4096);
         let (log, log_rx) = LogAggregator::new();
@@ -153,6 +157,7 @@ impl Supervisor {
         (
             Self {
                 config: Arc::new(std::sync::RwLock::new(config)),
+                config_path,
                 handles: Arc::new(RwLock::new(HashMap::new())),
                 events,
                 log,
@@ -367,8 +372,14 @@ impl Supervisor {
                 use nix::sys::signal::{kill, Signal};
                 use nix::unistd::Pid;
                 if let Some(pid) = h.state.pid() {
-                    let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+                    // Negative PID = kill the entire process group (pgid = pid since we
+                    // spawned with process_group(0)). This ensures child processes of wrappers
+                    // like `npm run dev` are also terminated, not just the wrapper itself.
+                    let pgid = Pid::from_raw(-(pid as i32));
+                    let _ = kill(pgid, Signal::SIGTERM);
                     let _ = tokio::time::timeout(stop_timeout, h.child.wait()).await;
+                    // SIGKILL the group if still alive after grace period
+                    let _ = kill(pgid, Signal::SIGKILL);
                 }
             }
             let _ = h.child.kill().await;
@@ -378,6 +389,28 @@ impl Supervisor {
                 state: "stopped".into(),
             });
         }
+    }
+
+    /// Stop only the named services and any services that transitively depend on them,
+    /// in safe order (dependents first, then targets).
+    pub async fn stop_named(&self, names: &[String]) {
+        let cfg = self.cfg();
+        let stop_order = match crate::graph::DependencyGraph::from_config(&cfg) {
+            Ok(g) => {
+                let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                g.transitive_dependents_stop_order(&refs)
+            }
+            Err(_) => names.to_vec(),
+        };
+        for name in &stop_order {
+            self.stop_service(name).await;
+        }
+    }
+
+    /// Reload A3sfile.hcl from disk and apply changes without restarting unchanged services.
+    pub async fn reload_from_disk(&self) -> Result<()> {
+        let new_cfg = DevConfig::from_file(&self.config_path)?;
+        self.reload(Arc::new(new_cfg)).await
     }
 
     pub async fn restart_service(&self, name: &str) -> Result<()> {
@@ -752,6 +785,7 @@ mod tests {
             subdomain: None,
             env: Default::default(),
             env_file: None,
+            log_file: None,
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
             watch: None,
             health: None,
@@ -774,7 +808,7 @@ mod tests {
 
     fn make_supervisor(cfg: Arc<DevConfig>) -> Arc<Supervisor> {
         let proxy = Arc::new(crate::proxy::ProxyRouter::new(0));
-        let (sup, _) = Supervisor::new(cfg, proxy);
+        let (sup, _) = Supervisor::new(cfg, proxy, std::path::PathBuf::from(""));
         Arc::new(sup)
     }
 

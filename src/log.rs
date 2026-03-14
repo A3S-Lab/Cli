@@ -83,6 +83,41 @@ impl LogAggregator {
         self.tx.subscribe()
     }
 
+    /// Spawn a task that writes log lines for `service` to `path` (append mode).
+    pub fn register_log_file(&self, service: String, path: std::path::PathBuf) {
+        let mut rx = self.tx.subscribe();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let file = match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!("cannot open log file {}: {e}", path.display());
+                    return;
+                }
+            };
+            let mut writer = tokio::io::BufWriter::new(file);
+            loop {
+                match rx.recv().await {
+                    Ok(entry) if entry.service == service => {
+                        let line = format!("{}\n", entry.line);
+                        if writer.write_all(line.as_bytes()).await.is_err() {
+                            break;
+                        }
+                        let _ = writer.flush().await;
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                }
+            }
+        });
+    }
+
     /// Return up to `n` recent log lines, optionally filtered by service.
     pub fn recent(&self, service: Option<&str>, n: usize) -> Vec<LogLine> {
         let history = match self.history.lock() {

@@ -24,6 +24,8 @@ pub enum IpcRequest {
         service: Option<String>,
         lines: usize,
     },
+    /// Reload A3sfile.hcl without restarting unchanged services.
+    Reload,
 }
 
 /// IPC response from daemon to client.

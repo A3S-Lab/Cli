@@ -70,9 +70,8 @@ pub async fn serve(sup: Arc<Supervisor>) {
                         if services.is_empty() {
                             sup.stop_all().await;
                         } else {
-                            for name in &services {
-                                sup.stop_service(name).await;
-                            }
+                            // stop_named stops dependents first, then the named services
+                            sup.stop_named(&services).await;
                         }
                         let _ = writer.write_all(&encode(&IpcResponse::Ok)).await;
                     }
@@ -107,6 +106,14 @@ pub async fn serve(sup: Arc<Supervisor>) {
                                 break;
                             }
                         }
+                    }
+
+                    IpcRequest::Reload => {
+                        let resp = match sup.reload_from_disk().await {
+                            Ok(_) => IpcResponse::Ok,
+                            Err(e) => IpcResponse::Error { msg: e.to_string() },
+                        };
+                        let _ = writer.write_all(&encode(&resp)).await;
                     }
 
                     IpcRequest::History { service, lines } => {

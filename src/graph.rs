@@ -8,8 +8,10 @@ pub struct DependencyGraph {
     order: Vec<String>,
     /// Groups of services that can start concurrently (each wave's deps are fully in prior waves)
     waves: Vec<Vec<String>>,
-    /// Per-service direct deps (for transitive closure queries)
+    /// Per-service direct deps (node → what it depends on)
     deps: HashMap<String, Vec<String>>,
+    /// Reverse: per-service direct dependents (node → what depends on it)
+    reverse_deps: HashMap<String, Vec<String>>,
 }
 
 impl DependencyGraph {
@@ -24,10 +26,15 @@ impl DependencyGraph {
             .map(|(k, v)| (k.clone(), v.depends_on.clone()))
             .collect();
 
+        // reverse_deps: node → services that directly depend on it
+        let mut reverse_deps: HashMap<String, Vec<String>> =
+            names.iter().map(|n| (n.to_string(), vec![])).collect();
+
         for (name, svc) in &cfg.service {
             for dep in &svc.depends_on {
                 *in_degree.entry(name.as_str()).or_insert(0) += 1;
                 dependents.entry(dep.as_str()).or_default().push(name.as_str());
+                reverse_deps.entry(dep.clone()).or_default().push(name.clone());
             }
         }
 
@@ -64,7 +71,12 @@ impl DependencyGraph {
             return Err(DevError::Cycle(cycled.join(", ")));
         }
 
-        Ok(Self { order, waves, deps })
+        Ok(Self {
+            order,
+            waves,
+            deps,
+            reverse_deps,
+        })
     }
 
     pub fn start_order(&self) -> &[String] {
@@ -79,6 +91,28 @@ impl DependencyGraph {
 
     pub fn stop_order(&self) -> impl Iterator<Item = &str> {
         self.order.iter().rev().map(|s| s.as_str())
+    }
+
+    /// Returns `names` plus all services that transitively depend on any of them,
+    /// in reverse topological order (dependents first, named services last).
+    /// Use this to determine safe stop order: stop dependents before stopping targets.
+    pub fn transitive_dependents_stop_order(&self, names: &[&str]) -> Vec<String> {
+        let mut needed: HashSet<String> = names.iter().map(|s| s.to_string()).collect();
+        let mut queue: VecDeque<String> = names.iter().map(|s| s.to_string()).collect();
+        while let Some(node) = queue.pop_front() {
+            for dependent in self.reverse_deps.get(&node).into_iter().flatten() {
+                if needed.insert(dependent.clone()) {
+                    queue.push_back(dependent.clone());
+                }
+            }
+        }
+        // Reverse topological = stop order
+        self.order
+            .iter()
+            .rev()
+            .filter(|n| needed.contains(*n))
+            .cloned()
+            .collect()
     }
 
     /// Returns `names` plus all their transitive deps, in topological start order.
@@ -118,6 +152,7 @@ mod tests {
                     subdomain: None,
                     env: Default::default(),
                     env_file: None,
+                    log_file: None,
                     depends_on: deps.iter().map(|s| s.to_string()).collect(),
                     watch: None,
                     health: None,
@@ -250,10 +285,48 @@ mod tests {
 
     #[test]
     fn test_transitive_start_order_already_included() {
-        // Requesting both "a" and "b" where b depends on a — no duplicates
         let cfg = make_config(vec![("a", vec![]), ("b", vec!["a"])]);
         let g = DependencyGraph::from_config(&cfg).unwrap();
         let result = g.transitive_start_order(&["a", "b"]);
         assert_eq!(result, ["a", "b"]);
+    }
+
+    #[test]
+    fn test_transitive_dependents_stop_order_chain() {
+        // c→b→a: stopping "a" should also stop b then c first
+        let cfg = make_config(vec![("a", vec![]), ("b", vec!["a"]), ("c", vec!["b"])]);
+        let g = DependencyGraph::from_config(&cfg).unwrap();
+        let result = g.transitive_dependents_stop_order(&["a"]);
+        // dependents first: c, b, then a
+        assert_eq!(result, ["c", "b", "a"]);
+    }
+
+    #[test]
+    fn test_transitive_dependents_stop_order_leaf() {
+        // stopping a leaf (no dependents) returns just itself
+        let cfg = make_config(vec![("a", vec![]), ("b", vec!["a"])]);
+        let g = DependencyGraph::from_config(&cfg).unwrap();
+        let result = g.transitive_dependents_stop_order(&["b"]);
+        assert_eq!(result, ["b"]);
+    }
+
+    #[test]
+    fn test_transitive_dependents_stop_order_diamond() {
+        // d→b,c→a: stopping "a" should stop d, b, c, a (dependents before deps)
+        let cfg = make_config(vec![
+            ("a", vec![]),
+            ("b", vec!["a"]),
+            ("c", vec!["a"]),
+            ("d", vec!["b", "c"]),
+        ]);
+        let g = DependencyGraph::from_config(&cfg).unwrap();
+        let result = g.transitive_dependents_stop_order(&["a"]);
+        // d must come before b and c; b and c before a
+        let pos = |s: &str| result.iter().position(|x| x == s).unwrap();
+        assert!(pos("d") < pos("b"));
+        assert!(pos("d") < pos("c"));
+        assert!(pos("b") < pos("a"));
+        assert!(pos("c") < pos("a"));
+        assert_eq!(result.len(), 4);
     }
 }

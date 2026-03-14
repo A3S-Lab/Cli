@@ -55,6 +55,9 @@ pub struct ServiceDef {
     /// Variables in `env` take precedence over env_file.
     #[serde(default)]
     pub env_file: Option<PathBuf>,
+    /// Write stdout/stderr to this file (append mode). Relative to the A3sfile.hcl directory.
+    #[serde(default)]
+    pub log_file: Option<PathBuf>,
     #[serde(default)]
     pub depends_on: Vec<String>,
     #[serde(default)]
@@ -288,6 +291,7 @@ mod tests {
             subdomain: None,
             env: Default::default(),
             env_file: None,
+            log_file: None,
             depends_on: depends_on.into_iter().map(|s| s.to_string()).collect(),
             watch: None,
             health: None,
