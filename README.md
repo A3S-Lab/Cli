@@ -11,8 +11,7 @@ Local development orchestration tool for the A3S monorepo — and a unified CLI 
 - Watches source files and hot-restarts services on change
 - Routes services to subdomains via a local reverse proxy
 - Proxies to A3S ecosystem tools (`a3s box`, `a3s gateway`, etc.), auto-installing them if missing
-- Manages a local k3s Kubernetes cluster (Lima VM on macOS, systemd on Linux)
-- Provides a web UI for real-time service and cluster monitoring
+- Provides a web UI for real-time service and container monitoring
 
 ## Install
 
@@ -139,23 +138,11 @@ a3s gateway --help
 | `a3s update [tools]` | Update ecosystem tools (all if no names given) |
 | `a3s upgrade` | Upgrade the `a3s` binary itself |
 
-### Kubernetes
-
-| Command | Description |
-|---------|-------------|
-| `a3s kube start` | Install and start a local k3s cluster |
-| `a3s kube stop` | Stop the local k3s cluster |
-| `a3s kube status` | Show k3s cluster status |
-| `a3s kube kubeconfig` | Write kubeconfig to `~/.kube/config` (macOS: run once after VM is Running) |
-
-On macOS, uses [Lima](https://lima-vm.io/) with the `template://k3s` template. On Linux, uses the official k3s install script + systemd.
-
 ## Web UI
 
 When running `a3s up`, a web UI is available at `http://localhost:10350` by default.
 
 - **Services tab** — real-time status, log stream, per-service restart/stop buttons, resizable sidebar
-- **Kube tab** — k3s cluster management, nodes/namespaces/pods table, pod log viewer
 - **Box tab** — container, image, network, and volume management for `a3s-box`
 
 Disable the UI with `--no-ui`. Change the port with `--ui-port <port>`.
@@ -243,12 +230,9 @@ just fmt
 - [x] `a3s validate` — config validation without starting anything
 - [x] Ecosystem tool proxy — auto-install `a3s-box`, `a3s-gateway`, `a3s-power` from GitHub Releases
 - [x] `a3s upgrade` / `a3s update` — self-update and ecosystem tool updates
-- [x] `a3s kube` — local k3s cluster management (Lima on macOS, systemd on Linux)
 - [x] Port `0` — auto-assign a free port at startup; preserved across restarts
 - [x] `disabled` services — skipped at start, excluded from dependency validation
 - [x] **Ongoing health monitoring** — continuous background health check loop; 3 consecutive failures → `unhealthy` state + SIGTERM + crash-recovery restart; recovers to `running` on success; monitor re-armed after each crash-recovery restart
-- [x] **`a3s kube kubeconfig`** — new subcommand that writes Lima k3s kubeconfig to `~/.kube/config`; run once after `a3s kube start` to enable `kubectl` on macOS
-- [x] **Pod `age` field** — derived from `metadata.creationTimestamp` via JSON output; displays `Xs`, `Xm`, `Xh`, `Xd`
 - [x] **File watcher `watcher_stop` leak fixed** — watcher stop sender is now propagated to restarted service handles; `stop_service()` correctly cancels the OS watcher after file-watcher-triggered restarts
 
 ### Planned 📋
@@ -256,7 +240,7 @@ just fmt
 - [ ] SIGHUP config reload — apply changes to `A3sfile.hcl` without a full restart
 - [ ] Per-service restart policy — configurable `max_restarts`, `backoff`, and `on_failure` behavior in `A3sfile.hcl`
 - [ ] Graceful shutdown timeout — configurable per-service grace period before SIGKILL
-- [ ] Test coverage — `supervisor`, `proxy`, `watcher`, `box_mgr`, `kube` modules have no unit tests
+- [ ] Test coverage — `supervisor`, `proxy`, `watcher`, `box_mgr` modules have no unit tests
 
 ## License
 

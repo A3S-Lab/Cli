@@ -11,7 +11,6 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use crate::box_mgr;
-use crate::kube;
 use crate::supervisor::Supervisor;
 
 pub const DEFAULT_UI_PORT: u16 = 10350;
@@ -125,78 +124,6 @@ async fn handle(
         (Method::POST, p) if p.starts_with("/api/stop/") => {
             let name = urldecode(&p["/api/stop/".len()..]);
             sup.stop_service(&name).await;
-            full_response("application/json", b"{\"ok\":true}".to_vec())
-        }
-        (Method::GET, "/api/kube/status") => {
-            let status = kube::query_status().await;
-            let body = serde_json::to_vec(&status).unwrap_or_default();
-            full_response("application/json", body)
-        }
-        (Method::GET, "/api/kube/resources") => {
-            let ns = query
-                .split('&')
-                .find(|p| p.starts_with("ns="))
-                .map(|p| urldecode(&p["ns=".len()..]));
-            match kube::query_resources(ns.as_deref()).await {
-                Ok(res) => {
-                    let body = serde_json::to_vec(&res).unwrap_or_default();
-                    full_response("application/json", body)
-                }
-                Err(e) => {
-                    let body = format!("{{\"error\":\"{e}\"}}").into_bytes();
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .header("content-type", "application/json")
-                        .body(Full::new(Bytes::from(body)).map_err(|e| e).boxed())
-                        .unwrap()
-                }
-            }
-        }
-        (Method::GET, p) if p.starts_with("/api/kube/logs/") => {
-            // /api/kube/logs/<namespace>/<pod>?tail=200
-            let rest = &p["/api/kube/logs/".len()..];
-            let (ns, name) = rest.split_once('/').unwrap_or(("default", rest));
-            let (ns, name) = (urldecode(ns), urldecode(name));
-            let tail: usize = query
-                .split('&')
-                .find(|p| p.starts_with("tail="))
-                .and_then(|p| p["tail=".len()..].parse().ok())
-                .unwrap_or(200);
-            match kube::pod_logs(&ns, &name, tail).await {
-                Ok(logs) => full_response("text/plain; charset=utf-8", logs.into_bytes()),
-                Err(e) => {
-                    let body = format!("error: {e}").into_bytes();
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .header("content-type", "text/plain")
-                        .body(Full::new(Bytes::from(body)).map_err(|e| e).boxed())
-                        .unwrap()
-                }
-            }
-        }
-        (Method::DELETE, p) if p.starts_with("/api/kube/pod/") => {
-            // /api/kube/pod/<namespace>/<name>
-            let rest = &p["/api/kube/pod/".len()..];
-            let (ns, name) = rest.split_once('/').unwrap_or(("default", rest));
-            let (ns, name) = (urldecode(ns), urldecode(name));
-            match kube::delete_pod(&ns, &name).await {
-                Ok(_) => full_response("application/json", b"{\"ok\":true}".to_vec()),
-                Err(e) => {
-                    let body = format!("{{\"error\":\"{e}\"}}").into_bytes();
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .header("content-type", "application/json")
-                        .body(Full::new(Bytes::from(body)).map_err(|e| e).boxed())
-                        .unwrap()
-                }
-            }
-        }
-        (Method::POST, "/api/kube/start") => {
-            tokio::spawn(async { let _ = kube::start().await; });
-            full_response("application/json", b"{\"ok\":true}".to_vec())
-        }
-        (Method::POST, "/api/kube/stop") => {
-            tokio::spawn(async { let _ = kube::stop().await; });
             full_response("application/json", b"{\"ok\":true}".to_vec())
         }
         // ── Box API ──────────────────────────────────────────────────────────

@@ -12,7 +12,6 @@ mod error;
 mod graph;
 mod health;
 mod ipc;
-mod kube;
 mod log;
 mod proxy;
 mod state;
@@ -107,27 +106,11 @@ enum Commands {
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<String>,
     },
-    /// Manage a local k3s Kubernetes cluster
-    Kube {
-        #[command(subcommand)]
-        cmd: KubeCommands,
-    },
     /// Proxy to an a3s ecosystem tool (e.g. `a3s box`, `a3s gateway`)
     #[command(external_subcommand)]
     Tool(Vec<String>),
 }
 
-#[derive(Subcommand)]
-enum KubeCommands {
-    /// Install and start a local k3s cluster (via a3s box)
-    Start,
-    /// Stop the local k3s cluster
-    Stop,
-    /// Show k3s cluster status
-    Status,
-    /// Write kubeconfig to ~/.kube/config so kubectl can connect (macOS: run after VM is Running)
-    Kubeconfig,
-}
 
 #[tokio::main]
 async fn main() {
@@ -539,12 +522,6 @@ async fn run(cli: Cli) -> Result<()> {
                 msg: err.to_string(),
             });
         }
-        Commands::Kube { cmd } => match cmd {
-            KubeCommands::Start => kube::start().await?,
-            KubeCommands::Stop => kube::stop().await?,
-            KubeCommands::Status => kube::status().await?,
-            KubeCommands::Kubeconfig => kube::kubeconfig().await?,
-        },
     }
 
     Ok(())
