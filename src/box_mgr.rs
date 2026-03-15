@@ -155,7 +155,6 @@ pub async fn get_info() -> Result<BoxInfo> {
             let parts: Vec<&str> = v.split(',').collect();
             if let Some(t) = parts.first() {
                 info.boxes_total = t
-                    .trim()
                     .split_whitespace()
                     .next()
                     .and_then(|n| n.parse().ok())
@@ -163,7 +162,6 @@ pub async fn get_info() -> Result<BoxInfo> {
             }
             if let Some(r) = parts.get(1) {
                 info.boxes_running = r
-                    .trim()
                     .split_whitespace()
                     .next()
                     .and_then(|n| n.parse().ok())

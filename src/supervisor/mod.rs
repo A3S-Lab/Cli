@@ -5,6 +5,7 @@ use std::time::Instant;
 use tokio::process::Child;
 use tokio::sync::{broadcast, RwLock};
 
+use colored::Colorize;
 use crate::config::{DevConfig, ServiceDef};
 use crate::error::{DevError, Result};
 use crate::graph::DependencyGraph;
@@ -34,6 +35,8 @@ struct ServiceHandle {
     port: u16,
     /// Stops the file watcher OS thread for this service, if any.
     watcher_stop: Option<std::sync::mpsc::SyncSender<()>>,
+    /// Number of crash-recovery restarts since the service was first started.
+    restart_count: u32,
 }
 
 /// Number of consecutive health check failures before transitioning to `Unhealthy`
@@ -142,10 +145,19 @@ pub struct Supervisor {
     config: ConfigCell,
     /// Path to A3sfile.hcl — used by `reload_from_disk` and `socket_path`.
     pub config_path: std::path::PathBuf,
+    /// The env_override name used at startup (if any). Preserved across hot-reloads.
+    env_name: Arc<std::sync::RwLock<Option<String>>>,
     handles: Arc<RwLock<HashMap<String, ServiceHandle>>>,
     events: broadcast::Sender<SupervisorEvent>,
     log: Arc<LogAggregator>,
     proxy: Arc<ProxyRouter>,
+}
+
+/// Summary of what changed during a hot-reload.
+pub struct ReloadSummary {
+    pub started: Vec<String>,
+    pub stopped: Vec<String>,
+    pub restarted: Vec<String>,
 }
 
 impl Supervisor {
@@ -153,6 +165,7 @@ impl Supervisor {
         config: Arc<DevConfig>,
         proxy: Arc<ProxyRouter>,
         config_path: std::path::PathBuf,
+        env_name: Option<String>,
     ) -> (Self, broadcast::Receiver<SupervisorEvent>) {
         let (events, rx) = broadcast::channel(4096);
         let (log, log_rx) = LogAggregator::new();
@@ -163,6 +176,7 @@ impl Supervisor {
             Self {
                 config: Arc::new(std::sync::RwLock::new(config)),
                 config_path,
+                env_name: Arc::new(std::sync::RwLock::new(env_name)),
                 handles: Arc::new(RwLock::new(HashMap::new())),
                 events,
                 log,
@@ -181,8 +195,8 @@ impl Supervisor {
         self.log.subscribe()
     }
 
-    pub fn log_history(&self, service: Option<&str>, lines: usize) -> Vec<crate::log::LogLine> {
-        self.log.recent(service, lines)
+    pub fn log_history(&self, services: &[String], lines: usize) -> Vec<crate::log::LogLine> {
+        self.log.recent(services, lines)
     }
 
     /// Start all non-disabled services, launching each wave concurrently.
@@ -199,7 +213,23 @@ impl Supervisor {
             .map(|(i, n)| (n.clone(), i))
             .collect();
 
-        for wave in graph.start_waves() {
+        let waves = graph.start_waves().to_vec();
+        let total_waves = waves.len();
+        for (wave_idx, wave) in waves.iter().enumerate() {
+            let active: Vec<&str> = wave
+                .iter()
+                .filter(|n| !cfg.service.get(*n).is_some_and(|s| s.disabled))
+                .map(|s| s.as_str())
+                .collect();
+            if !active.is_empty() {
+                println!(
+                    "{} wave {}/{}: {}",
+                    "→".cyan(),
+                    wave_idx + 1,
+                    total_waves,
+                    active.join(", ")
+                );
+            }
             let mut set = tokio::task::JoinSet::new();
             for name in wave {
                 if cfg.service.get(name).is_some_and(|s| s.disabled) {
@@ -272,11 +302,26 @@ impl Supervisor {
             tracing::info!("[{name}] starting on :{port}");
         }
 
+        // Resolve ${other.port} references using the currently-assigned ports of all
+        // running services.  This must happen after `port` is known for this service.
+        let svc = {
+            let mut runtime_ports: HashMap<String, u16> = self
+                .handles
+                .read()
+                .await
+                .iter()
+                .map(|(n, h)| (n.clone(), h.port))
+                .collect();
+            runtime_ports.insert(name.to_string(), port);
+            crate::config::resolve_service_ports(svc, &runtime_ports)
+        };
+
         let spec = SpawnSpec {
             name,
             svc: &svc,
             port,
             color_idx,
+            config_dir: self.config_path.parent().unwrap_or(std::path::Path::new(".")),
         };
         let result = spawn_process(&spec, &self.log).await?;
 
@@ -291,6 +336,7 @@ impl Supervisor {
                 color_idx,
                 port,
                 watcher_stop: None,
+                restart_count: 0,
             },
         );
 
@@ -348,11 +394,18 @@ impl Supervisor {
     }
 
     /// Stop all running services in reverse wave order, stopping each wave concurrently.
-    /// Services with no inter-dependencies within a wave stop in parallel.
-    pub async fn stop_all(self: &Arc<Self>) {
+    /// Returns the names of services that were actually running and got stopped.
+    pub async fn stop_all(self: &Arc<Self>) -> Vec<String> {
         let graph = match DependencyGraph::from_config(&self.cfg()) {
             Ok(g) => g,
-            Err(_) => return,
+            Err(_) => return vec![],
+        };
+        let running: Vec<String> = {
+            let map = self.handles.read().await;
+            map.iter()
+                .filter(|(_, h)| !matches!(h.state, ServiceState::Stopped))
+                .map(|(n, _)| n.clone())
+                .collect()
         };
         for wave in graph.start_waves().iter().rev() {
             let mut set = tokio::task::JoinSet::new();
@@ -363,6 +416,7 @@ impl Supervisor {
             }
             while set.join_next().await.is_some() {}
         }
+        running
     }
 
     pub async fn stop_service(&self, name: &str) {
@@ -430,7 +484,8 @@ impl Supervisor {
 
     /// Stop only the named services and any services that transitively depend on them,
     /// in safe order (dependents first, then targets).
-    pub async fn stop_named(&self, names: &[String]) {
+    /// Returns the names of services that were stopped.
+    pub async fn stop_named(&self, names: &[String]) -> Vec<String> {
         let cfg = self.cfg();
         let stop_order = match crate::graph::DependencyGraph::from_config(&cfg) {
             Ok(g) => {
@@ -442,24 +497,43 @@ impl Supervisor {
         for name in &stop_order {
             self.stop_service(name).await;
         }
+        stop_order
     }
 
     /// Reload A3sfile.hcl from disk and apply changes without restarting unchanged services.
-    pub async fn reload_from_disk(&self) -> Result<()> {
-        let new_cfg = DevConfig::from_file(&self.config_path)?;
+    pub async fn reload_from_disk(&self) -> Result<ReloadSummary> {
+        let env_name = self.env_name.read().unwrap().clone();
+        let new_cfg = DevConfig::from_file_with_env(&self.config_path, env_name.as_deref())?;
         self.reload(Arc::new(new_cfg)).await
     }
 
-    pub async fn restart_service(&self, name: &str) -> Result<()> {
-        let color_idx = self
-            .handles
-            .read()
-            .await
-            .get(name)
-            .map(|h| h.color_idx)
-            .unwrap_or(0);
-        self.stop_service(name).await;
-        self.start_service(name, color_idx).await
+    pub async fn restart_service(self: &Arc<Self>, name: &str) -> Result<()> {
+        let cfg = self.cfg();
+        let graph = DependencyGraph::from_config(&cfg)?;
+
+        // Dependents must stop before the target; stop_order = [dependents..., target].
+        let stop_order = graph.transitive_dependents_stop_order(&[name]);
+
+        // Snapshot color indices before stopping (handles will be removed).
+        let colors: HashMap<String, usize> = {
+            let map = self.handles.read().await;
+            stop_order
+                .iter()
+                .map(|n| (n.clone(), map.get(n).map(|h| h.color_idx).unwrap_or(0)))
+                .collect()
+        };
+
+        for svc_name in &stop_order {
+            self.stop_service(svc_name).await;
+        }
+
+        // Restart in topological order: target first, then dependents.
+        for svc_name in stop_order.iter().rev() {
+            let idx = colors.get(svc_name).copied().unwrap_or(0);
+            self.start_service(svc_name, idx).await?;
+        }
+
+        Ok(())
     }
 
     pub async fn status_rows(&self) -> Vec<StatusRow> {
@@ -488,6 +562,15 @@ impl Supervisor {
                     subdomain: svc.subdomain.clone(),
                     uptime_secs,
                     proxy_port: cfg.dev.proxy_port,
+                    restart_count: handle.map(|h| h.restart_count).unwrap_or(0),
+                    healthy: if svc.health.is_some() {
+                        Some(!matches!(
+                            handle.map(|h| &h.state),
+                            Some(ServiceState::Unhealthy { .. })
+                        ))
+                    } else {
+                        None
+                    },
                 }
             })
             .collect()
@@ -510,6 +593,11 @@ impl Supervisor {
         let config_cell = self.config.clone();
         let log = self.log.clone();
         let proxy = self.proxy.clone();
+        let config_dir = self
+            .config_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
 
         tokio::spawn(async move {
             // Capture assigned port once — preserves auto-assigned port across restarts
@@ -628,18 +716,33 @@ impl Supervisor {
                     svc_def.port
                 };
 
+                // Resolve ${other.port} references at restart time.
+                let resolved_def = {
+                    let runtime_ports: HashMap<String, u16> = handles
+                        .read()
+                        .await
+                        .iter()
+                        .map(|(n, h)| (n.clone(), h.port))
+                        .collect();
+                    crate::config::resolve_service_ports(svc_def.clone(), &runtime_ports)
+                };
+
                 let spec = SpawnSpec {
                     name: &svc_name,
-                    svc: &svc_def,
+                    svc: &resolved_def,
                     port,
                     color_idx,
+                    config_dir: &config_dir,
                 };
                 match spawn_process(&spec, &log).await {
                     Ok(result) => {
                         if let Some(sub) = &svc_def.subdomain {
                             proxy.update(sub.clone(), port).await;
                         }
-                        handles.write().await.insert(
+                        let mut map = handles.write().await;
+                        let prev_restart_count =
+                            map.get(&svc_name).map(|h| h.restart_count).unwrap_or(0);
+                        map.insert(
                             svc_name.clone(),
                             ServiceHandle {
                                 child: result.child,
@@ -650,6 +753,7 @@ impl Supervisor {
                                 color_idx,
                                 port,
                                 watcher_stop: None,
+                                restart_count: prev_restart_count + 1,
                             },
                         );
                         let _ = events.send(SupervisorEvent::StateChanged {
@@ -689,6 +793,11 @@ impl Supervisor {
         let events = self.events.clone();
         let config_cell = self.config.clone();
         let log = self.log.clone();
+        let config_dir = self
+            .config_path
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
         let stop_tx = spawn_watcher(svc_name.clone(), paths, ignore, tx);
@@ -727,6 +836,7 @@ impl Supervisor {
                     svc: &svc_def,
                     port,
                     color_idx,
+                    config_dir: &config_dir,
                 };
                 match spawn_process(&spec, &log).await {
                     Ok(result) => {
@@ -743,6 +853,7 @@ impl Supervisor {
                                 // Propagate watcher_stop so stop_service() can cancel the
                                 // watcher even after a file-watcher-triggered restart.
                                 watcher_stop: Some(task_stop_tx.clone()),
+                                restart_count: 0,
                             },
                         );
                         let _ = events.send(SupervisorEvent::StateChanged {
@@ -766,8 +877,13 @@ impl Supervisor {
     /// - Services whose config changed are restarted.
     /// - Services newly added (and not `disabled`) are started.
     /// - Unchanged running services are left alone.
-    pub async fn reload(&self, new_config: Arc<DevConfig>) -> Result<()> {
+    pub async fn reload(&self, new_config: Arc<DevConfig>) -> Result<ReloadSummary> {
         let old_config = self.cfg();
+        let mut summary = ReloadSummary {
+            started: vec![],
+            stopped: vec![],
+            restarted: vec![],
+        };
 
         // 1. Stop removed / newly-disabled services.
         for name in old_config.service.keys() {
@@ -776,10 +892,11 @@ impl Supervisor {
             if gone || disabled {
                 tracing::info!("[{name}] stopping — removed or disabled in reloaded config");
                 self.stop_service(name).await;
+                summary.stopped.push(name.clone());
             }
         }
 
-        // 2. Swap in the new config so start_service / restart_service see it.
+        // 2. Swap in the new config so start_service sees it.
         *self.config.write().unwrap() = Arc::clone(&new_config);
 
         // 3. Restart changed services and start new ones in dependency order.
@@ -797,17 +914,20 @@ impl Supervisor {
                 }
                 Some(_) => {
                     tracing::info!("[{name}] config changed — restarting");
-                    self.restart_service(name).await?;
+                    self.stop_service(name).await;
+                    self.start_service(name, idx).await?;
+                    summary.restarted.push(name.clone());
                 }
                 None => {
                     tracing::info!("[{name}] new service — starting");
                     self.start_service(name, idx).await?;
+                    summary.started.push(name.clone());
                 }
             }
         }
 
         tracing::info!("config reloaded ({} services)", new_config.service.len());
-        Ok(())
+        Ok(summary)
     }
 }
 
@@ -826,6 +946,7 @@ mod tests {
             env: Default::default(),
             env_file: None,
             log_file: None,
+            log_rotate_mb: 0,
             pre_start: None,
             post_stop: None,
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
@@ -834,6 +955,8 @@ mod tests {
             restart: Default::default(),
             stop_timeout: std::time::Duration::from_secs(1),
             disabled: false,
+            labels: vec![],
+            k8s: None,
         }
     }
 
@@ -845,12 +968,13 @@ mod tests {
         Arc::new(DevConfig {
             dev: GlobalSettings::default(),
             service: map,
+            env_override: Default::default(),
         })
     }
 
     fn make_supervisor(cfg: Arc<DevConfig>) -> Arc<Supervisor> {
         let proxy = Arc::new(crate::proxy::ProxyRouter::new(0));
-        let (sup, _) = Supervisor::new(cfg, proxy, std::path::PathBuf::from(""));
+        let (sup, _) = Supervisor::new(cfg, proxy, std::path::PathBuf::from(""), None);
         Arc::new(sup)
     }
 

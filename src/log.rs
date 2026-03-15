@@ -79,21 +79,48 @@ impl LogAggregator {
         });
     }
 
+    /// Directly push a log line (used by k8s build output, etc.).
+    pub fn push(&self, service: &str, line: &str, color_idx: usize) {
+        let entry = LogLine {
+            service: service.to_string(),
+            line: line.to_string(),
+            color_idx,
+        };
+        let mut history = self.history.lock().unwrap();
+        if history.len() >= HISTORY_CAP {
+            history.pop_front();
+        }
+        history.push_back(entry.clone());
+        drop(history);
+        let _ = self.tx.send(entry);
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<LogLine> {
         self.tx.subscribe()
     }
 
     /// Spawn a task that writes log lines for `service` to `path` (append mode).
-    pub fn register_log_file(&self, service: String, path: std::path::PathBuf) {
+    /// If `rotate_bytes` is non-zero, the file is rotated (renamed to `<path>.1`)
+    /// when it reaches that size.
+    pub fn register_log_file(
+        &self,
+        service: String,
+        path: std::path::PathBuf,
+        rotate_bytes: u64,
+    ) {
         let mut rx = self.tx.subscribe();
         tokio::spawn(async move {
             use tokio::io::AsyncWriteExt;
-            let file = match tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .await
-            {
+
+            let open_file = |p: std::path::PathBuf| async move {
+                tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(p)
+                    .await
+            };
+
+            let file = match open_file(path.clone()).await {
                 Ok(f) => f,
                 Err(e) => {
                     tracing::warn!("cannot open log file {}: {e}", path.display());
@@ -101,6 +128,8 @@ impl LogAggregator {
                 }
             };
             let mut writer = tokio::io::BufWriter::new(file);
+            let mut bytes_written: u64 = 0;
+
             loop {
                 match rx.recv().await {
                     Ok(entry) if entry.service == service => {
@@ -109,6 +138,37 @@ impl LogAggregator {
                             break;
                         }
                         let _ = writer.flush().await;
+                        bytes_written += line.len() as u64;
+
+                        // Rotate when the size limit is reached.
+                        if rotate_bytes > 0 && bytes_written >= rotate_bytes {
+                            let rotated = path.with_extension(
+                                path.extension()
+                                    .and_then(|e| e.to_str())
+                                    .map(|e| format!("{e}.1"))
+                                    .unwrap_or_else(|| "log.1".into()),
+                            );
+                            // Flush and drop the current writer before renaming.
+                            drop(writer);
+                            let _ = tokio::fs::rename(&path, &rotated).await;
+                            tracing::info!(
+                                "[{service}] rotated log → {}",
+                                rotated.display()
+                            );
+                            match open_file(path.clone()).await {
+                                Ok(f) => {
+                                    writer = tokio::io::BufWriter::new(f);
+                                    bytes_written = 0;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "cannot reopen log file after rotation {}: {e}",
+                                        path.display()
+                                    );
+                                    break;
+                                }
+                            }
+                        }
                     }
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -119,7 +179,7 @@ impl LogAggregator {
     }
 
     /// Return up to `n` recent log lines, optionally filtered by service.
-    pub fn recent(&self, service: Option<&str>, n: usize) -> Vec<LogLine> {
+    pub fn recent(&self, services: &[String], n: usize) -> Vec<LogLine> {
         let history = match self.history.lock() {
             Ok(h) => h,
             Err(e) => {
@@ -129,7 +189,7 @@ impl LogAggregator {
         };
         history
             .iter()
-            .filter(|l| service.is_none_or(|s| l.service == s))
+            .filter(|l| services.is_empty() || services.contains(&l.service))
             .rev()
             .take(n)
             .cloned()
@@ -216,7 +276,7 @@ mod tests {
             h.push_back(make_line("svc-b", "line2"));
             h.push_back(make_line("svc-a", "line3"));
         }
-        let all = agg.recent(None, 100);
+        let all = agg.recent(&[], 100);
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].line, "line1");
         assert_eq!(all[2].line, "line3");
@@ -231,7 +291,7 @@ mod tests {
             h.push_back(make_line("svc-b", "b1"));
             h.push_back(make_line("svc-a", "a2"));
         }
-        let filtered = agg.recent(Some("svc-a"), 100);
+        let filtered = agg.recent(&["svc-a".to_string()], 100);
         assert_eq!(filtered.len(), 2);
         assert!(filtered.iter().all(|l| l.service == "svc-a"));
     }
@@ -245,7 +305,7 @@ mod tests {
                 h.push_back(make_line("svc", &format!("line{i}")));
             }
         }
-        let recent = agg.recent(None, 3);
+        let recent = agg.recent(&[], 3);
         assert_eq!(recent.len(), 3);
         assert_eq!(recent[0].line, "line7");
         assert_eq!(recent[2].line, "line9");
@@ -263,7 +323,7 @@ mod tests {
                 h.push_back(make_line("svc", &format!("line{i}")));
             }
         }
-        let all = agg.recent(None, usize::MAX);
+        let all = agg.recent(&[], usize::MAX);
         assert_eq!(all.len(), HISTORY_CAP);
         assert_eq!(all[0].line, "line5");
     }
@@ -271,7 +331,7 @@ mod tests {
     #[test]
     fn test_recent_empty_history() {
         let (agg, _rx) = LogAggregator::new();
-        assert_eq!(agg.recent(None, 10).len(), 0);
-        assert_eq!(agg.recent(Some("svc"), 10).len(), 0);
+        assert_eq!(agg.recent(&[], 10).len(), 0);
+        assert_eq!(agg.recent(&["svc".to_string()], 10).len(), 0);
     }
 }

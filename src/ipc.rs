@@ -27,11 +27,11 @@ pub enum IpcRequest {
         service: String,
     },
     Logs {
-        service: Option<String>,
+        services: Vec<String>,
         follow: bool,
     },
     History {
-        service: Option<String>,
+        services: Vec<String>,
         lines: usize,
     },
     /// Reload A3sfile.hcl without restarting unchanged services.
@@ -45,7 +45,13 @@ pub enum IpcResponse {
     Status { rows: Vec<StatusRow> },
     Ok,
     Error { msg: String },
-    LogLine { service: String, line: String },
+    LogLine { service: String, line: String, color_idx: usize },
+    Reloaded {
+        started: Vec<String>,
+        stopped: Vec<String>,
+        restarted: Vec<String>,
+    },
+    Stopped { services: Vec<String> },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -57,6 +63,9 @@ pub struct StatusRow {
     pub subdomain: Option<String>,
     pub uptime_secs: Option<u64>,
     pub proxy_port: u16,
+    pub restart_count: u32,
+    /// None = no health check configured; Some(true/false) = last check result.
+    pub healthy: Option<bool>,
 }
 
 #[cfg(test)]
@@ -102,13 +111,13 @@ mod tests {
     #[test]
     fn test_request_logs_roundtrip() {
         let req = IpcRequest::Logs {
-            service: Some("web".into()),
+            services: vec!["web".into()],
             follow: true,
         };
         let json = serde_json::to_string(&req).unwrap();
         let decoded: IpcRequest = serde_json::from_str(&json).unwrap();
-        if let IpcRequest::Logs { service, follow } = decoded {
-            assert_eq!(service, Some("web".into()));
+        if let IpcRequest::Logs { services, follow } = decoded {
+            assert_eq!(services, vec!["web".to_string()]);
             assert!(follow);
         } else {
             panic!("wrong variant");
@@ -128,12 +137,14 @@ mod tests {
         let resp = IpcResponse::LogLine {
             service: "api".into(),
             line: "started".into(),
+            color_idx: 3,
         };
         let json = serde_json::to_string(&resp).unwrap();
         let decoded: IpcResponse = serde_json::from_str(&json).unwrap();
-        if let IpcResponse::LogLine { service, line } = decoded {
+        if let IpcResponse::LogLine { service, line, color_idx } = decoded {
             assert_eq!(service, "api");
             assert_eq!(line, "started");
+            assert_eq!(color_idx, 3);
         } else {
             panic!("wrong variant");
         }

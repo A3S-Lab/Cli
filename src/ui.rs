@@ -72,7 +72,8 @@ async fn handle(
                 .split('&')
                 .find(|p| p.starts_with("service="))
                 .map(|p| p["service=".len()..].to_string());
-            let recent = sup.log_history(service_filter.as_deref(), 200);
+            let services = service_filter.as_ref().map(|s| vec![s.clone()]).unwrap_or_default();
+            let recent = sup.log_history(&services, 200);
             let body = serde_json::to_vec(&recent).unwrap_or_default();
             full_response("application/json", body)
         }

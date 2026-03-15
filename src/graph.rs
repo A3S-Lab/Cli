@@ -98,6 +98,7 @@ impl DependencyGraph {
         &self.waves
     }
 
+    #[allow(dead_code)]
     pub fn stop_order(&self) -> impl Iterator<Item = &str> {
         self.order.iter().rev().map(|s| s.as_str())
     }
@@ -162,6 +163,7 @@ mod tests {
                     env: Default::default(),
                     env_file: None,
                     log_file: None,
+                    log_rotate_mb: 0,
                     pre_start: None,
                     post_stop: None,
                     depends_on: deps.iter().map(|s| s.to_string()).collect(),
@@ -170,12 +172,15 @@ mod tests {
                     restart: Default::default(),
                     stop_timeout: std::time::Duration::from_secs(5),
                     disabled: false,
+                    labels: vec![],
+                    k8s: None,
                 },
             );
         }
         DevConfig {
             dev: Default::default(),
             service: map,
+            env_override: Default::default(),
         }
     }
 

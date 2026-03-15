@@ -114,6 +114,7 @@ mod tests {
             env: Default::default(),
             env_file: None,
             log_file: None,
+            log_rotate_mb: 0,
             pre_start: None,
             post_stop: None,
             depends_on: vec![],
@@ -122,6 +123,8 @@ mod tests {
             restart: Default::default(),
             stop_timeout: std::time::Duration::from_secs(5),
             disabled: false,
+            labels: vec![],
+            k8s: None,
         }
     }
 

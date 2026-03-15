@@ -12,6 +12,8 @@ pub struct SpawnSpec<'a> {
     pub svc: &'a ServiceDef,
     pub port: u16,
     pub color_idx: usize,
+    /// Directory containing A3sfile.hcl — used to resolve relative `log_file` paths.
+    pub config_dir: &'a std::path::Path,
 }
 
 pub struct SpawnResult {
@@ -93,12 +95,14 @@ pub async fn spawn_process(spec: &SpawnSpec<'_>, log: &Arc<LogAggregator>) -> Re
     if let Some(log_path) = &spec.svc.log_file {
         let resolved = if log_path.is_absolute() {
             log_path.clone()
-        } else if let Some(dir) = &spec.svc.dir {
-            dir.join(log_path)
         } else {
-            log_path.clone()
+            spec.config_dir.join(log_path)
         };
-        log.register_log_file(spec.name.to_string(), resolved);
+        log.register_log_file(
+            spec.name.to_string(),
+            resolved,
+            spec.svc.log_rotate_mb * 1024 * 1024,
+        );
     }
 
     Ok(SpawnResult { child, pid })

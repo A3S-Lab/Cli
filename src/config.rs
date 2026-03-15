@@ -13,6 +13,10 @@ pub struct DevConfig {
     pub dev: GlobalSettings,
     #[serde(default)]
     pub service: IndexMap<String, ServiceDef>,
+    /// Named environment overrides. `a3s up --env <name>` merges the matching
+    /// block's per-service env on top of the base service env.
+    #[serde(default)]
+    pub env_override: IndexMap<String, EnvOverride>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -21,6 +25,22 @@ pub struct GlobalSettings {
     pub proxy_port: u16,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// Runtime mode: "local" (default) or "k8s"
+    #[serde(default = "default_runtime")]
+    pub runtime: String,
+    /// Kubernetes context (only used when runtime = "k8s")
+    #[serde(default)]
+    pub k8s_context: Option<String>,
+    /// Kubernetes namespace (only used when runtime = "k8s")
+    #[serde(default = "default_k8s_namespace")]
+    pub k8s_namespace: String,
+    /// Local registry to push images to after build (e.g. "localhost:5000").
+    /// When set, images are tagged and pushed before deploying.
+    #[serde(default)]
+    pub registry: Option<String>,
+    /// Enable HTTPS for the reverse proxy (generates self-signed certificate)
+    #[serde(default)]
+    pub https: bool,
 }
 
 impl Default for GlobalSettings {
@@ -28,6 +48,11 @@ impl Default for GlobalSettings {
         Self {
             proxy_port: default_proxy_port(),
             log_level: default_log_level(),
+            runtime: default_runtime(),
+            k8s_context: None,
+            k8s_namespace: default_k8s_namespace(),
+            registry: None,
+            https: false,
         }
     }
 }
@@ -37,6 +62,25 @@ fn default_proxy_port() -> u16 {
 }
 fn default_log_level() -> String {
     "info".into()
+}
+fn default_runtime() -> String {
+    "local".into()
+}
+fn default_k8s_namespace() -> String {
+    "default".into()
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct EnvOverride {
+    /// Per-service env overrides. Only `env` is supported; other fields are ignored.
+    #[serde(default)]
+    pub service: IndexMap<String, ServiceEnvOverride>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ServiceEnvOverride {
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -58,6 +102,9 @@ pub struct ServiceDef {
     /// Write stdout/stderr to this file (append mode). Relative to the A3sfile.hcl directory.
     #[serde(default)]
     pub log_file: Option<PathBuf>,
+    /// Rotate `log_file` when it reaches this size (in MB). 0 = no rotation (default).
+    #[serde(default)]
+    pub log_rotate_mb: u64,
     /// Shell command to run (in the service's working directory) before starting the service.
     /// A non-zero exit code aborts startup.
     #[serde(default)]
@@ -79,6 +126,92 @@ pub struct ServiceDef {
     /// If true, this service is skipped entirely (not started, not validated for deps).
     #[serde(default)]
     pub disabled: bool,
+    /// Labels for grouping and filtering services (e.g., ["backend", "critical"]).
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Kubernetes-specific configuration (only used when runtime = "k8s").
+    #[serde(default)]
+    pub k8s: Option<K8sConfig>,
+}
+
+/// Kubernetes-specific configuration for a service.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct K8sConfig {
+    /// Container image (e.g., "node:20-alpine", "myapp:latest").
+    pub image: String,
+    /// Path to Dockerfile for building the image (optional).
+    #[serde(default)]
+    pub dockerfile: Option<PathBuf>,
+    /// Build arguments for docker build (optional).
+    #[serde(default)]
+    pub build_args: HashMap<String, String>,
+    /// Number of replicas (default: 1).
+    #[serde(default = "default_replicas")]
+    pub replicas: u32,
+    /// Resource requests and limits (optional).
+    #[serde(default)]
+    pub resources: Option<K8sResources>,
+    /// Path to Helm chart directory (optional, e.g., "./charts/myapp").
+    /// If set, uses `helm template` instead of generating manifests.
+    #[serde(default)]
+    pub helm_chart: Option<PathBuf>,
+    /// Path to Helm values file (optional, e.g., "./values.yaml").
+    #[serde(default)]
+    pub helm_values: Option<PathBuf>,
+    /// Path to Kustomize directory (optional, e.g., "./k8s/overlays/dev").
+    /// If set, uses `kubectl kustomize` instead of generating manifests.
+    #[serde(default)]
+    pub kustomize_dir: Option<PathBuf>,
+    /// Path to file containing secret key-value pairs (optional, e.g., ".env.secret").
+    /// Secrets are stored in a Kubernetes Secret and injected as environment variables.
+    #[serde(default)]
+    pub secret_file: Option<PathBuf>,
+    /// Secret key-value pairs (optional). Used if secret_file is not set.
+    #[serde(default)]
+    pub secrets: HashMap<String, String>,
+    /// Volume mounts (optional). Supports hostPath, emptyDir, configMap, secret.
+    #[serde(default)]
+    pub volumes: Vec<K8sVolume>,
+}
+
+/// Kubernetes volume configuration.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct K8sVolume {
+    /// Volume name (must be unique within the service).
+    pub name: String,
+    /// Volume type: "hostPath", "emptyDir", "configMap", "secret".
+    #[serde(rename = "type")]
+    pub volume_type: String,
+    /// Mount path in the container (required).
+    pub mount_path: String,
+    /// Host path (required for hostPath type, relative to A3sfile.hcl directory).
+    #[serde(default)]
+    pub host_path: Option<PathBuf>,
+    /// ConfigMap name (required for configMap type).
+    #[serde(default)]
+    pub config_map: Option<String>,
+    /// Secret name (required for secret type).
+    #[serde(default)]
+    pub secret: Option<String>,
+    /// Read-only mount (default: false).
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct K8sResources {
+    #[serde(default)]
+    pub cpu_request: Option<String>,
+    #[serde(default)]
+    pub cpu_limit: Option<String>,
+    #[serde(default)]
+    pub memory_request: Option<String>,
+    #[serde(default)]
+    pub memory_limit: Option<String>,
+}
+
+fn default_replicas() -> u32 {
+    1
 }
 
 /// Crash-recovery restart policy for a service.
@@ -206,6 +339,91 @@ mod duration_serde {
     }
 }
 
+/// Expand `env("VAR_NAME")` and `env("VAR_NAME", "default")` calls in HCL source text.
+/// This runs before HCL parsing so the result is a plain string literal the parser can handle.
+///
+/// - `env("VAR")` → value of `VAR`, or empty string if unset
+/// - `env("VAR", "default")` → value of `VAR`, or `"default"` if unset
+///
+/// The replacement is injected as a quoted HCL string literal so it fits anywhere a string
+/// value is expected. Nested quotes in the value are escaped.
+pub fn expand_env_func(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Look for `env(` — case-sensitive, matching Terraform/HCL convention.
+        if bytes[i..].starts_with(b"env(") {
+            i += 4; // skip `env(`
+            // Skip optional whitespace
+            while i < bytes.len() && bytes[i] == b' ' {
+                i += 1;
+            }
+            // Expect opening quote for var name
+            let quote = bytes[i];
+            if quote == b'"' || quote == b'\'' {
+                i += 1;
+                let start = i;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += 1;
+                }
+                let var_name = &src[start..i];
+                i += 1; // closing quote
+
+                // Skip whitespace
+                while i < bytes.len() && bytes[i] == b' ' {
+                    i += 1;
+                }
+
+                // Optional default argument: , "default_value"
+                let default_val = if i < bytes.len() && bytes[i] == b',' {
+                    i += 1; // skip ','
+                    while i < bytes.len() && bytes[i] == b' ' {
+                        i += 1;
+                    }
+                    let dq = bytes[i];
+                    if dq == b'"' || dq == b'\'' {
+                        i += 1;
+                        let ds = i;
+                        while i < bytes.len() && bytes[i] != dq {
+                            i += 1;
+                        }
+                        let d = src[ds..i].to_string();
+                        i += 1; // closing quote
+                        d
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                // Skip whitespace then closing ')'
+                while i < bytes.len() && bytes[i] == b' ' {
+                    i += 1;
+                }
+                if i < bytes.len() && bytes[i] == b')' {
+                    i += 1;
+                }
+
+                let value = std::env::var(var_name).unwrap_or(default_val);
+                // Emit as a quoted HCL string literal with inner quotes escaped.
+                out.push('"');
+                out.push_str(&value.replace('\\', "\\\\").replace('"', "\\\""));
+                out.push('"');
+                continue;
+            } else {
+                // Not a valid env() call — emit as-is and back up.
+                out.push_str("env(");
+                continue;
+            }
+        }
+        out.push(src[i..].chars().next().unwrap());
+        i += src[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+    }
+    out
+}
+
 /// Replace `${VAR}` placeholders in `s` with OS environment variable values.
 /// Unknown variables are left as-is (the `${VAR}` literal is preserved).
 pub fn interpolate_env_vars(s: &str) -> String {
@@ -225,6 +443,47 @@ pub fn interpolate_env_vars(s: &str) -> String {
         }
     }
     result
+}
+
+/// Replace `${name.port}` placeholders in `s` with the runtime-assigned port for that service.
+/// Any placeholder that doesn't match a known service name is left unchanged.
+/// This is called at service-start time, after OS-env interpolation has already run.
+pub fn interpolate_service_ports(s: &str, ports: &HashMap<String, u16>) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '$' && chars.peek() == Some(&'{') {
+            chars.next(); // consume '{'
+            let expr: String = chars.by_ref().take_while(|&c| c != '}').collect();
+            if let Some(svc_name) = expr.strip_suffix(".port") {
+                if let Some(&port) = ports.get(svc_name) {
+                    result.push_str(&port.to_string());
+                    continue;
+                }
+            }
+            // Not a recognised service-port reference — leave as-is.
+            result.push_str(&format!("${{{expr}}}"));
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Apply `${name.port}` interpolation to `cmd`, `env`, and hook fields of a `ServiceDef`.
+/// `ports` maps service names to their runtime-assigned ports.
+pub fn resolve_service_ports(mut svc: ServiceDef, ports: &HashMap<String, u16>) -> ServiceDef {
+    svc.cmd = interpolate_service_ports(&svc.cmd, ports);
+    for v in svc.env.values_mut() {
+        *v = interpolate_service_ports(v, ports);
+    }
+    if let Some(h) = svc.pre_start.take() {
+        svc.pre_start = Some(interpolate_service_ports(&h, ports));
+    }
+    if let Some(h) = svc.post_stop.take() {
+        svc.post_stop = Some(interpolate_service_ports(&h, ports));
+    }
+    svc
 }
 
 /// Parse a `.env`-style file and return a map of key → value.
@@ -247,16 +506,45 @@ fn parse_env_file(contents: &str) -> HashMap<String, String> {
 
 impl DevConfig {
     pub fn from_file(path: &std::path::Path) -> Result<Self> {
-        let src = std::fs::read_to_string(path)
+        Self::from_file_with_env(path, None)
+    }
+
+    /// Load config, optionally applying a named env_override block on top.
+    pub fn from_file_with_env(path: &std::path::Path, env_name: Option<&str>) -> Result<Self> {
+        let raw = std::fs::read_to_string(path)
             .map_err(|e| DevError::Config(format!("cannot read {}: {e}", path.display())))?;
+        // Expand env("VAR") calls before HCL parsing.
+        let src = expand_env_func(&raw);
         let mut cfg: DevConfig = hcl::from_str(&src)
             .map_err(|e| DevError::Config(format!("parse error in {}: {e}", path.display())))?;
         let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
         cfg.resolve_env_files(base_dir)?;
         cfg.apply_global_dotenv(base_dir);
         cfg.apply_interpolation();
+        if let Some(name) = env_name {
+            cfg.apply_env_override(name)?;
+        }
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// Merge env variables from a named `env_override` block into matching services.
+    /// Override values take precedence over the base service env.
+    fn apply_env_override(&mut self, name: &str) -> Result<()> {
+        let overrides = self.env_override.get(name).cloned().ok_or_else(|| {
+            DevError::Config(format!(
+                "env_override '{name}' not found in A3sfile.hcl — available: {}",
+                self.env_override.keys().cloned().collect::<Vec<_>>().join(", ")
+            ))
+        })?;
+        for (svc_name, svc_override) in &overrides.service {
+            if let Some(svc) = self.service.get_mut(svc_name) {
+                for (k, v) in &svc_override.env {
+                    svc.env.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// For each service with an `env_file`, parse the file and merge its variables.
@@ -362,6 +650,7 @@ mod tests {
             env: Default::default(),
             env_file: None,
             log_file: None,
+            log_rotate_mb: 0,
             pre_start: None,
             post_stop: None,
             depends_on: depends_on.into_iter().map(|s| s.to_string()).collect(),
@@ -370,6 +659,8 @@ mod tests {
             restart: Default::default(),
             stop_timeout: std::time::Duration::from_secs(5),
             disabled: false,
+            labels: vec![],
+            k8s: None,
         }
     }
 
@@ -381,6 +672,7 @@ mod tests {
         DevConfig {
             dev: GlobalSettings::default(),
             service: map,
+            env_override: Default::default(),
         }
     }
 
@@ -699,5 +991,193 @@ service "api" {
         let cfg: DevConfig = hcl::from_str(src).unwrap();
         assert!(cfg.service["api"].pre_start.is_none());
         assert!(cfg.service["api"].post_stop.is_none());
+    }
+
+    // ── Inter-service port interpolation ─────────────────────────────────────
+
+    #[test]
+    fn test_interpolate_service_ports_known() {
+        let mut ports = HashMap::new();
+        ports.insert("db".to_string(), 5432u16);
+        let result = interpolate_service_ports("postgres://localhost:${db.port}/dev", &ports);
+        assert_eq!(result, "postgres://localhost:5432/dev");
+    }
+
+    #[test]
+    fn test_interpolate_service_ports_unknown_preserved() {
+        let ports = HashMap::new();
+        let result = interpolate_service_ports("${missing.port}", &ports);
+        assert_eq!(result, "${missing.port}");
+    }
+
+    #[test]
+    fn test_interpolate_service_ports_non_port_field_preserved() {
+        let ports = HashMap::new();
+        let result = interpolate_service_ports("${db.host}", &ports);
+        assert_eq!(result, "${db.host}");
+    }
+
+    #[test]
+    fn test_resolve_service_ports_cmd_and_env() {
+        let mut ports = HashMap::new();
+        ports.insert("db".to_string(), 5432u16);
+        let mut svc = make_svc(3000, vec![]);
+        svc.cmd = "myapp --db ${db.port}".into();
+        svc.env
+            .insert("DB_URL".into(), "postgres://localhost:${db.port}/app".into());
+        let resolved = resolve_service_ports(svc, &ports);
+        assert_eq!(resolved.cmd, "myapp --db 5432");
+        assert_eq!(resolved.env["DB_URL"], "postgres://localhost:5432/app");
+    }
+
+    #[test]
+    fn test_log_rotate_mb_default_zero() {
+        let src = r#"service "api" { cmd = "echo" }"#;
+        let cfg: DevConfig = hcl::from_str(src).unwrap();
+        assert_eq!(cfg.service["api"].log_rotate_mb, 0);
+    }
+
+    #[test]
+    fn test_log_rotate_mb_parsed() {
+        let src = r#"service "api" { cmd = "echo"\n  log_rotate_mb = 50 }"#;
+        // Use hcl file roundtrip
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("A3sfile.hcl");
+        std::fs::write(
+            &hcl_path,
+            "service \"api\" {\n  cmd = \"echo\"\n  log_rotate_mb = 50\n}\n",
+        )
+        .unwrap();
+        let cfg = DevConfig::from_file(&hcl_path).unwrap();
+        assert_eq!(cfg.service["api"].log_rotate_mb, 50);
+        let _ = src;
+    }
+
+    // ── Labels ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_labels_parsed() {
+        let src = r#"
+service "api" {
+  cmd = "echo"
+  labels = ["backend", "critical"]
+}
+"#;
+        let cfg: DevConfig = hcl::from_str(src).unwrap();
+        assert_eq!(cfg.service["api"].labels, vec!["backend", "critical"]);
+    }
+
+    #[test]
+    fn test_labels_default_empty() {
+        let src = r#"service "api" { cmd = "echo" }"#;
+        let cfg: DevConfig = hcl::from_str(src).unwrap();
+        assert!(cfg.service["api"].labels.is_empty());
+    }
+
+    // ── env() function expansion ───────────────────────────────────────────
+
+    #[test]
+    fn test_expand_env_func_known_var() {
+        std::env::set_var("_A3S_EF_TEST", "hello");
+        let result = expand_env_func(r#"cmd = env("_A3S_EF_TEST")"#);
+        assert_eq!(result, r#"cmd = "hello""#);
+        std::env::remove_var("_A3S_EF_TEST");
+    }
+
+    #[test]
+    fn test_expand_env_func_unknown_var_empty() {
+        let result = expand_env_func(r#"cmd = env("_A3S_EF_DEFINITELY_NOT_SET_XYZ")"#);
+        assert_eq!(result, r#"cmd = """#);
+    }
+
+    #[test]
+    fn test_expand_env_func_default_used_when_unset() {
+        let result = expand_env_func(r#"cmd = env("_A3S_EF_UNSET_XYZ", "fallback")"#);
+        assert_eq!(result, r#"cmd = "fallback""#);
+    }
+
+    #[test]
+    fn test_expand_env_func_default_ignored_when_set() {
+        std::env::set_var("_A3S_EF_SET", "real");
+        let result = expand_env_func(r#"cmd = env("_A3S_EF_SET", "fallback")"#);
+        assert_eq!(result, r#"cmd = "real""#);
+        std::env::remove_var("_A3S_EF_SET");
+    }
+
+    #[test]
+    fn test_expand_env_func_no_calls_passthrough() {
+        let src = r#"service "api" { cmd = "echo" }"#;
+        assert_eq!(expand_env_func(src), src);
+    }
+
+    #[test]
+    fn test_expand_env_func_in_hcl_roundtrip() {
+        std::env::set_var("_A3S_EF_CMD", "node server.js");
+        let src = r#"service "api" { cmd = env("_A3S_EF_CMD") }"#;
+        let expanded = expand_env_func(src);
+        let cfg: DevConfig = hcl::from_str(&expanded).unwrap();
+        assert_eq!(cfg.service["api"].cmd, "node server.js");
+        std::env::remove_var("_A3S_EF_CMD");
+    }
+
+    #[test]
+    fn test_expand_env_func_escapes_inner_quotes() {
+        std::env::set_var("_A3S_EF_QUOTE", r#"say "hi""#);
+        let result = expand_env_func(r#"x = env("_A3S_EF_QUOTE")"#);
+        assert_eq!(result, r#"x = "say \"hi\"""#);
+        std::env::remove_var("_A3S_EF_QUOTE");
+    }
+
+    // ── env_override ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_env_override_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("A3sfile.hcl");
+        std::fs::write(
+            &hcl_path,
+            r#"
+service "api" {
+  cmd = "echo"
+  env = { DB_URL = "localhost" }
+}
+
+env_override "staging" {
+  service "api" {
+    env = { DB_URL = "staging-db" }
+  }
+}
+"#,
+        )
+        .unwrap();
+        let cfg = DevConfig::from_file_with_env(&hcl_path, Some("staging")).unwrap();
+        assert_eq!(
+            cfg.service["api"].env.get("DB_URL").map(|s| s.as_str()),
+            Some("staging-db")
+        );
+    }
+
+    #[test]
+    fn test_env_override_unknown_name_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("A3sfile.hcl");
+        std::fs::write(&hcl_path, r#"service "api" { cmd = "echo" }"#).unwrap();
+        assert!(DevConfig::from_file_with_env(&hcl_path, Some("nonexistent")).is_err());
+    }
+
+    #[test]
+    fn test_env_override_none_leaves_base_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let hcl_path = dir.path().join("A3sfile.hcl");
+        std::fs::write(
+            &hcl_path,
+            "service \"api\" {\n  cmd = \"echo\"\n  env = { DB_URL = \"localhost\" }\n}\n",
+        )
+        .unwrap();
+        let cfg = DevConfig::from_file_with_env(&hcl_path, None).unwrap();
+        assert_eq!(
+            cfg.service["api"].env.get("DB_URL").map(|s| s.as_str()),
+            Some("localhost")
+        );
     }
 }

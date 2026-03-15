@@ -68,6 +68,7 @@ service "api" {
   port       = 3000
   subdomain  = "api"
   depends_on = ["db"]
+  labels     = ["backend", "critical"]
 
   env = {
     DATABASE_URL = "postgres://localhost:5432/dev"
@@ -89,8 +90,9 @@ service "api" {
 }
 
 service "db" {
-  cmd  = "postgres -D /usr/local/var/postgresql@16"
-  port = 5432
+  cmd    = "postgres -D /usr/local/var/postgresql@16"
+  port   = 5432
+  labels = ["backend", "critical"]
 
   health {
     type    = "tcp"
@@ -107,14 +109,17 @@ service "db" {
 | Command | Description |
 |---------|-------------|
 | `a3s up [services]` | Start all (or named) services in dependency order |
+| `a3s up --label <label>` | Start services with specific label (can be repeated) |
+| `a3s up --env <name>` | Apply a named `env_override` block (e.g., `--env staging`) |
 | `a3s up --detach` | Start as background daemon |
 | `a3s up --detach --wait` | Start daemon, block until all services healthy |
 | `a3s down [services]` | Stop all (or named) services |
+| `a3s down --label <label>` | Stop services with specific label (can be repeated) |
 | `a3s restart <service>` | Restart a service |
 | `a3s reload` | Reload A3sfile.hcl without restarting unchanged services |
 | `a3s status` / `a3s ps` | Show service status table |
 | `a3s status --json` | Machine-readable JSON status |
-| `a3s logs [--service name]` | Tail logs (all or one service) |
+| `a3s logs [--service name]` | Tail logs (all or one service, repeatable) |
 | `a3s logs --grep <keyword>` | Filter log output by keyword |
 | `a3s logs --last N` | Show last N lines of history (default: 200) |
 | `a3s run <cmd>` | Run a one-off command with env merged from all services |
@@ -122,7 +127,8 @@ service "db" {
 | `a3s exec <service> -- <cmd>` | Run a command in a service's working directory and env |
 | `a3s validate` | Validate A3sfile.hcl without starting anything |
 | `a3s validate --strict` | Also check binaries exist on PATH and ports are free |
-| `a3s top [--interval N]` | Live CPU% and memory view per service (default: 2s refresh) |
+| `a3s top [--interval N]` | Live CPU% and memory view per service (default: 2s refresh); in k8s mode shows Pod CPU/memory via `kubectl top` |
+| `a3s port-forward <service> <local>:<remote>` | Forward local port to service in k8s cluster (k8s mode only, e.g., `a3s port-forward api 8080:3000`) |
 
 ### A3S ecosystem tools
 
@@ -164,8 +170,13 @@ variables at startup. Unknown variables are left as `${VAR}`.
 
 ```hcl
 dev {
-  proxy_port = 7080      # Local reverse proxy port (default: 7080)
-  log_level  = "info"    # Log level: trace, debug, info, warn, error
+  proxy_port     = 7080      # Local reverse proxy port (default: 7080)
+  log_level      = "info"    # Log level: trace, debug, info, warn, error
+  runtime        = "local"   # Runtime mode: "local" (default) or "k8s"
+  k8s_context    = "orbstack" # kubectl context (k8s mode only, optional)
+  k8s_namespace  = "dev"     # Kubernetes namespace (k8s mode only, default: "default")
+  registry       = "localhost:5000" # Container registry for k8s mode (optional, e.g., "localhost:5000")
+  https          = true      # Enable HTTPS for reverse proxy (generates self-signed cert in .a3s/)
 }
 
 service "<name>" {
@@ -175,6 +186,7 @@ service "<name>" {
   subdomain  = "api"     # Proxy subdomain: http://<subdomain>.localhost (optional)
   depends_on = ["db"]    # Services to start before this one (optional)
   disabled   = false     # Skip this service entirely (optional)
+  labels     = ["backend", "critical"]  # Labels for grouping and filtering (optional)
 
   env = {                # Environment variables (optional)
     KEY = "value"
@@ -210,6 +222,74 @@ service "<name>" {
     backoff      = "1s"  # Initial backoff delay (default: 1s, exponential)
     max_backoff  = "30s" # Maximum backoff delay (default: 30s)
     on_failure   = "restart"  # "restart" (default) or "stop"
+  }
+
+  # Kubernetes-specific config (only used when runtime = "k8s")
+  k8s {
+    image      = "node:20-alpine"  # Container image (required in k8s mode)
+    dockerfile = "./Dockerfile"    # Path to Dockerfile for building (optional)
+    replicas   = 1                 # Number of replicas (default: 1)
+
+    resources {                    # Resource requests/limits (optional)
+      cpu_request    = "100m"
+      cpu_limit      = "500m"
+      memory_request = "128Mi"
+      memory_limit   = "512Mi"
+    }
+
+    # Helm chart support (optional) — uses `helm template` instead of generating manifests
+    helm_chart  = "./charts/myapp"  # Path to Helm chart directory
+    helm_values = "./values.yaml"   # Path to Helm values file (optional)
+
+    # Kustomize support (optional) — uses `kubectl kustomize` instead of generating manifests
+    kustomize_dir = "./k8s/overlays/dev"  # Path to Kustomize directory
+
+    # Secret support (optional) — stored as Kubernetes Secret, injected as env vars
+    secret_file = ".env.secret"    # Path to .env-format file with sensitive values
+    secrets = {                    # Or inline key-value pairs (secret_file takes precedence)
+      API_KEY     = "my-secret-key"
+      DB_PASSWORD = "hunter2"
+    }
+
+    # Volume mounts (optional) — mount local directories, emptyDir, configMap, or secret
+    volumes = [
+      {
+        name       = "code"
+        type       = "hostPath"      # hostPath, emptyDir, configMap, secret
+        host_path  = "./src"         # Required for hostPath (relative to A3sfile.hcl)
+        mount_path = "/app/src"      # Mount path in container (required)
+        read_only  = false           # Optional, default: false
+      },
+      {
+        name       = "data"
+        type       = "emptyDir"
+        mount_path = "/data"
+      }
+    ]
+  }
+}
+
+# Named environment overrides — apply with `a3s up --env <name>`
+# Merges env variables on top of the base service env (override wins).
+env_override "staging" {
+  service "api" {
+    env = {
+      DATABASE_URL = "postgres://staging-db:5432/app"
+    }
+  }
+}
+```
+
+### env() function
+
+`env("VAR_NAME")` and `env("VAR_NAME", "default")` can be used anywhere a string value is expected in `A3sfile.hcl`. They are expanded before HCL parsing.
+
+```hcl
+service "api" {
+  cmd = env("API_CMD", "node server.js")
+  env = {
+    DATABASE_URL = env("DATABASE_URL", "postgres://localhost:5432/dev")
+    SECRET_KEY   = env("SECRET_KEY")
   }
 }
 ```
@@ -279,7 +359,25 @@ just fmt
 - [x] **`pre_start` / `post_stop` hooks** — optional shell commands run before a service starts (abort on non-zero exit) and after it stops; run in the service's working directory with its environment
 - [x] **Env var interpolation** — `${VAR}` placeholders in `cmd`, `env` values, and hook commands are replaced with OS environment variable values at config load time; unknown variables are preserved as-is; 93 tests total
 - [x] **`a3s validate --strict`** — additionally checks that every service's binary exists on `PATH` and that fixed ports are not already bound; exits non-zero if any check fails
-- [x] **`a3s top`** — live CPU% and RSS memory view per service, polling the running daemon every 2 seconds (configurable with `--interval`); reads stats via `ps`; 97 tests total
+- [x] **`a3s top`** — live CPU% and RSS memory view per service, polling the running daemon every 2 seconds (configurable with `--interval`); reads stats via `ps`; in k8s mode shows Pod CPU/memory via `kubectl top pods`; 135 tests total
+- [x] **Service labels** — `labels = ["backend", "critical"]` in a service block; `a3s up --label backend` starts only matching services (with deps); `a3s down --label critical` stops matching services; `a3s logs --service` accepts multiple values; 111 tests total
+- [x] **`env()` function in A3sfile.hcl** — `env("VAR")` and `env("VAR", "default")` expand OS environment variables directly in HCL source before parsing; works in any string field (`cmd`, `env`, `pre_start`, etc.); 121 tests total
+- [x] **`env_override` blocks + `a3s up --env <name>`** — named environment override blocks in `A3sfile.hcl`; `a3s up --env staging` merges the matching block's per-service env on top of the base config; enables dev/staging/prod switching without separate config files
+- [x] **`runtime = "k8s"` mode** — set `runtime = "k8s"` in the `dev {}` block to deploy services to a local Kubernetes cluster (OrbStack, Docker Desktop, etc.) instead of running as local processes; generates Deployment, Service, ConfigMap, and Ingress manifests from `A3sfile.hcl`; respects `depends_on` (initContainers), `health` (liveness/readiness probes), `env` (ConfigMap), `subdomain` (Ingress rules), and `k8s {}` block for image, replicas, and resource limits
+- [x] **k8s image build** — when `k8s.dockerfile` is set, `a3s up` automatically runs `docker build -t <image> -f <dockerfile>` before deploying; build output is streamed to the log aggregator in real-time
+- [x] **k8s file watch → rebuild → rollout restart** — `watch {}` blocks in k8s mode trigger `docker build` + `kubectl rollout restart deployment/<name>` on file changes instead of process restart; debounced, concurrent per-service
+- [x] **k8s `a3s down`** — deletes Deployment, Service, and ConfigMap resources for named services (or all if no names given); respects `--label` filtering
+- [x] **k8s `a3s status`** — shows pod status via `kubectl get pods -l managed-by=a3s`; supports `--json` for machine-readable output
+- [x] **k8s `a3s logs`** — streams pod logs via `kubectl logs -l app=<name>`; supports `--follow`, `--grep`, `--last`, multiple `--service` flags; concurrent multi-service output
+- [x] **k8s `a3s restart`** — triggers `kubectl rollout restart deployment/<name>` instead of SIGTERM
+- [x] **k8s `a3s validate --strict`** — checks kubectl availability, image/dockerfile configuration, and Dockerfile existence for all services with `k8s {}` blocks
+- [x] **k8s local registry push** — set `registry = "localhost:5000"` in the `dev {}` block to automatically tag and push built images to a local registry before deploying; build and push output streamed to logs
+- [x] **k8s `a3s top`** — shows Pod CPU and memory usage via `kubectl top pods -l managed-by=a3s`; requires metrics-server to be installed in the cluster; color-coded CPU usage (green < 200m, yellow < 500m, red >= 500m)
+- [x] **k8s Helm/Kustomize support** — set `helm_chart` or `kustomize_dir` in the `k8s {}` block to use existing Helm charts or Kustomize overlays instead of generating manifests; `helm template` and `kubectl kustomize` are called automatically; `a3s validate --strict` checks for Chart.yaml/kustomization.yaml existence and helm availability
+- [x] **k8s Secret support** — set `secret_file = ".env.secret"` or `secrets = { KEY = "value" }` in the `k8s {}` block to inject sensitive configuration as Kubernetes Secrets (base64-encoded, injected as environment variables via `envFrom.secretRef`); secrets are automatically deployed and deleted with the service
+- [x] **k8s Volume mounts** — set `volumes = [{ name, type, mount_path, ... }]` in the `k8s {}` block to mount volumes into containers; supports `hostPath` (local directories for hot-reload), `emptyDir` (temporary storage), `configMap`, and `secret`; hostPath paths are relative to A3sfile.hcl directory and automatically resolved to absolute paths
+- [x] **k8s `a3s port-forward`** — forward local port to a service in the k8s cluster via `a3s port-forward <service> <local-port>:<remote-port>`; wraps `kubectl port-forward deployment/<name>`; runs in foreground until Ctrl+C; k8s mode only
+- [x] **HTTPS support** — set `https = true` in the `dev {}` block to enable HTTPS for the reverse proxy; automatically generates self-signed certificate (stored in `.a3s/cert.pem` and `.a3s/key.pem`); access services via `https://api.localhost:7080` instead of `http://`; certificate includes `*.localhost` SAN for all subdomains
 
 ## License
 

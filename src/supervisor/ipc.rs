@@ -31,6 +31,13 @@ pub async fn serve(sup: Arc<Supervisor>) {
         }
     };
 
+    // Restrict socket to owner only — prevents other local users from sending IPC commands.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+
     tracing::debug!("IPC socket at {}", path.display());
 
     loop {
@@ -67,13 +74,14 @@ pub async fn serve(sup: Arc<Supervisor>) {
                     }
 
                     IpcRequest::Stop { services } => {
-                        if services.is_empty() {
-                            sup.stop_all().await;
+                        let stopped = if services.is_empty() {
+                            sup.stop_all().await
                         } else {
-                            // stop_named stops dependents first, then the named services
-                            sup.stop_named(&services).await;
-                        }
-                        let _ = writer.write_all(&encode(&IpcResponse::Ok)).await;
+                            sup.stop_named(&services).await
+                        };
+                        let _ = writer
+                            .write_all(&encode(&IpcResponse::Stopped { services: stopped }))
+                            .await;
                     }
 
                     IpcRequest::Restart { service } => {
@@ -84,15 +92,16 @@ pub async fn serve(sup: Arc<Supervisor>) {
                         let _ = writer.write_all(&encode(&resp)).await;
                     }
 
-                    IpcRequest::Logs { service, follow } => {
+                    IpcRequest::Logs { services, follow } => {
                         let mut rx = sup.subscribe_logs();
                         loop {
                             match rx.recv().await {
                                 Ok(entry) => {
-                                    if service.as_deref().is_none_or(|f| f == entry.service) {
+                                    if services.is_empty() || services.contains(&entry.service) {
                                         let resp = IpcResponse::LogLine {
                                             service: entry.service,
                                             line: entry.line,
+                                            color_idx: entry.color_idx,
                                         };
                                         if writer.write_all(&encode(&resp)).await.is_err() {
                                             break;
@@ -110,18 +119,23 @@ pub async fn serve(sup: Arc<Supervisor>) {
 
                     IpcRequest::Reload => {
                         let resp = match sup.reload_from_disk().await {
-                            Ok(_) => IpcResponse::Ok,
+                            Ok(s) => IpcResponse::Reloaded {
+                                started: s.started,
+                                stopped: s.stopped,
+                                restarted: s.restarted,
+                            },
                             Err(e) => IpcResponse::Error { msg: e.to_string() },
                         };
                         let _ = writer.write_all(&encode(&resp)).await;
                     }
 
-                    IpcRequest::History { service, lines } => {
-                        let recent = sup.log_history(service.as_deref(), lines);
+                    IpcRequest::History { services, lines } => {
+                        let recent = sup.log_history(&services, lines);
                         for entry in recent {
                             let resp = IpcResponse::LogLine {
                                 service: entry.service,
                                 line: entry.line,
+                                color_idx: entry.color_idx,
                             };
                             if writer.write_all(&encode(&resp)).await.is_err() {
                                 break;

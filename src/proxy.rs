@@ -18,6 +18,8 @@ type HttpClient = Client<hyper_util::client::legacy::connect::HttpConnector, Ful
 pub struct ProxyRouter {
     port: u16,
     routes: Routes,
+    https: bool,
+    tls_config: Option<Arc<tokio_rustls::rustls::ServerConfig>>,
 }
 
 impl ProxyRouter {
@@ -25,7 +27,28 @@ impl ProxyRouter {
         Self {
             port,
             routes: Arc::new(RwLock::new(HashMap::new())),
+            https: false,
+            tls_config: None,
         }
+    }
+
+    pub fn with_https(mut self, cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Result<Self, Box<dyn std::error::Error>> {
+        use tokio_rustls::rustls;
+
+        let certs = rustls_pemfile::certs(&mut &cert_pem[..])
+            .collect::<Result<Vec<_>, _>>()?;
+        let key = rustls_pemfile::private_key(&mut &key_pem[..])?
+            .ok_or("no private key found")?;
+
+        let mut config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)?;
+
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+        self.https = true;
+        self.tls_config = Some(Arc::new(config));
+        Ok(self)
     }
 
     /// Register or update a route (used when port is resolved at startup).
@@ -45,34 +68,73 @@ impl ProxyRouter {
             }
         };
 
-        tracing::info!("proxy listening on http://localhost:{}", self.port);
+        let protocol = if self.https { "https" } else { "http" };
+        tracing::info!("proxy listening on {}://localhost:{}", protocol, self.port);
 
         // Single shared HTTP client — connection pool reused across all requests
         let client: HttpClient = Client::builder(TokioExecutor::new()).build_http();
 
-        loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("proxy accept error: {e}");
-                    continue;
-                }
-            };
+        if self.https {
+            let tls_acceptor = tokio_rustls::TlsAcceptor::from(self.tls_config.clone().unwrap());
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("proxy accept error: {e}");
+                        continue;
+                    }
+                };
 
-            let routes = routes.clone();
-            let client = client.clone();
-            tokio::spawn(async move {
-                let io = hyper_util::rt::TokioIo::new(stream);
-                let svc = hyper::service::service_fn(move |req| {
-                    handle(req, routes.clone(), client.clone())
+                let routes = routes.clone();
+                let client = client.clone();
+                let tls_acceptor = tls_acceptor.clone();
+
+                tokio::spawn(async move {
+                    let tls_stream = match tls_acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::debug!("TLS handshake error: {e}");
+                            return;
+                        }
+                    };
+
+                    let io = hyper_util::rt::TokioIo::new(tls_stream);
+                    let svc = hyper::service::service_fn(move |req| {
+                        handle(req, routes.clone(), client.clone())
+                    });
+                    if let Err(e) = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await
+                    {
+                        tracing::debug!("proxy connection error: {e}");
+                    }
                 });
-                if let Err(e) = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, svc)
-                    .await
-                {
-                    tracing::debug!("proxy connection error: {e}");
-                }
-            });
+            }
+        } else {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("proxy accept error: {e}");
+                        continue;
+                    }
+                };
+
+                let routes = routes.clone();
+                let client = client.clone();
+                tokio::spawn(async move {
+                    let io = hyper_util::rt::TokioIo::new(stream);
+                    let svc = hyper::service::service_fn(move |req| {
+                        handle(req, routes.clone(), client.clone())
+                    });
+                    if let Err(e) = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await
+                    {
+                        tracing::debug!("proxy connection error: {e}");
+                    }
+                });
+            }
         }
     }
 }
