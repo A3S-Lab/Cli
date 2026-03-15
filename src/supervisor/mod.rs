@@ -5,7 +5,6 @@ use std::time::Instant;
 use tokio::process::Child;
 use tokio::sync::{broadcast, RwLock};
 
-use colored::Colorize;
 use crate::config::{DevConfig, ServiceDef};
 use crate::error::{DevError, Result};
 use crate::graph::DependencyGraph;
@@ -15,6 +14,7 @@ use crate::log::LogAggregator;
 use crate::proxy::ProxyRouter;
 use crate::state::ServiceState;
 use crate::watcher::spawn_watcher;
+use colored::Colorize;
 
 use spawn::{free_port, spawn_process, SpawnSpec};
 
@@ -321,7 +321,10 @@ impl Supervisor {
             svc: &svc,
             port,
             color_idx,
-            config_dir: self.config_path.parent().unwrap_or(std::path::Path::new(".")),
+            config_dir: self
+                .config_path
+                .parent()
+                .unwrap_or(std::path::Path::new(".")),
         };
         let result = spawn_process(&spec, &self.log).await?;
 

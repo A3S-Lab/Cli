@@ -32,13 +32,15 @@ impl ProxyRouter {
         }
     }
 
-    pub fn with_https(mut self, cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn with_https(
+        mut self,
+        cert_pem: Vec<u8>,
+        key_pem: Vec<u8>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         use tokio_rustls::rustls;
 
-        let certs = rustls_pemfile::certs(&mut &cert_pem[..])
-            .collect::<Result<Vec<_>, _>>()?;
-        let key = rustls_pemfile::private_key(&mut &key_pem[..])?
-            .ok_or("no private key found")?;
+        let certs = rustls_pemfile::certs(&mut &cert_pem[..]).collect::<Result<Vec<_>, _>>()?;
+        let key = rustls_pemfile::private_key(&mut &key_pem[..])?.ok_or("no private key found")?;
 
         let mut config = rustls::ServerConfig::builder()
             .with_no_client_auth()

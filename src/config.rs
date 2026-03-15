@@ -355,7 +355,7 @@ pub fn expand_env_func(src: &str) -> String {
         // Look for `env(` — case-sensitive, matching Terraform/HCL convention.
         if bytes[i..].starts_with(b"env(") {
             i += 4; // skip `env(`
-            // Skip optional whitespace
+                    // Skip optional whitespace
             while i < bytes.len() && bytes[i] == b' ' {
                 i += 1;
             }
@@ -534,7 +534,11 @@ impl DevConfig {
         let overrides = self.env_override.get(name).cloned().ok_or_else(|| {
             DevError::Config(format!(
                 "env_override '{name}' not found in A3sfile.hcl — available: {}",
-                self.env_override.keys().cloned().collect::<Vec<_>>().join(", ")
+                self.env_override
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ))
         })?;
         for (svc_name, svc_override) in &overrides.service {
@@ -1023,8 +1027,10 @@ service "api" {
         ports.insert("db".to_string(), 5432u16);
         let mut svc = make_svc(3000, vec![]);
         svc.cmd = "myapp --db ${db.port}".into();
-        svc.env
-            .insert("DB_URL".into(), "postgres://localhost:${db.port}/app".into());
+        svc.env.insert(
+            "DB_URL".into(),
+            "postgres://localhost:${db.port}/app".into(),
+        );
         let resolved = resolve_service_ports(svc, &ports);
         assert_eq!(resolved.cmd, "myapp --db 5432");
         assert_eq!(resolved.env["DB_URL"], "postgres://localhost:5432/app");

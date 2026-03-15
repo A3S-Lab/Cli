@@ -1,11 +1,11 @@
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use indexmap::IndexMap;
+use super::client::{K8sClient, PodStatus};
+use super::manifest::ManifestGenerator;
 use crate::config::ServiceDef;
 use crate::error::Result;
 use crate::log::LogAggregator;
-use super::client::{K8sClient, PodStatus};
-use super::manifest::ManifestGenerator;
+use indexmap::IndexMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Kubernetes runtime - manages services as Kubernetes resources.
 pub struct K8sRuntime {
@@ -27,9 +27,18 @@ impl K8sRuntime {
     }
 
     /// Build image and optionally push to registry. Returns the final image name to use.
-    async fn build_and_push(&self, name: &str, svc: &ServiceDef, config_dir: &std::path::Path) -> Result<Option<String>> {
-        let Some(ref k8s_cfg) = svc.k8s else { return Ok(None); };
-        let Some(ref dockerfile) = k8s_cfg.dockerfile else { return Ok(None); };
+    async fn build_and_push(
+        &self,
+        name: &str,
+        svc: &ServiceDef,
+        config_dir: &std::path::Path,
+    ) -> Result<Option<String>> {
+        let Some(ref k8s_cfg) = svc.k8s else {
+            return Ok(None);
+        };
+        let Some(ref dockerfile) = k8s_cfg.dockerfile else {
+            return Ok(None);
+        };
 
         let dockerfile = if dockerfile.is_absolute() {
             dockerfile.clone()
@@ -38,23 +47,23 @@ impl K8sRuntime {
         };
         let context = dockerfile.parent().unwrap_or(config_dir);
 
-        self.client.build_image(
-            &k8s_cfg.image,
-            &dockerfile,
-            context,
-            &k8s_cfg.build_args,
-            name,
-            Some(&self.log),
-        ).await?;
+        self.client
+            .build_image(
+                &k8s_cfg.image,
+                &dockerfile,
+                context,
+                &k8s_cfg.build_args,
+                name,
+                Some(&self.log),
+            )
+            .await?;
 
         // Push to registry if configured
         if let Some(ref registry) = self.registry {
-            let tagged = self.client.push_image(
-                &k8s_cfg.image,
-                registry,
-                name,
-                Some(&self.log),
-            ).await?;
+            let tagged = self
+                .client
+                .push_image(&k8s_cfg.image, registry, name, Some(&self.log))
+                .await?;
             return Ok(Some(tagged));
         }
 
@@ -62,7 +71,12 @@ impl K8sRuntime {
     }
 
     /// Build image if dockerfile is configured, then deploy to Kubernetes.
-    pub async fn start_service(&self, name: &str, svc: &ServiceDef, config_dir: &std::path::Path) -> Result<()> {
+    pub async fn start_service(
+        &self,
+        name: &str,
+        svc: &ServiceDef,
+        config_dir: &std::path::Path,
+    ) -> Result<()> {
         tracing::info!("[{}] deploying to kubernetes", name);
 
         self.build_and_push(name, svc, config_dir).await?;
@@ -74,19 +88,25 @@ impl K8sRuntime {
         if let Some(ref k8s_cfg) = svc.k8s {
             if let Some(ref helm_chart) = k8s_cfg.helm_chart {
                 // Use Helm template
-                tracing::info!("[{}] generating manifests from Helm chart: {}", name, helm_chart.display());
+                tracing::info!(
+                    "[{}] generating manifests from Helm chart: {}",
+                    name,
+                    helm_chart.display()
+                );
                 let chart_path = config_dir.join(helm_chart);
                 let values_path = k8s_cfg.helm_values.as_ref().map(|v| config_dir.join(v));
 
-                let manifest_yaml = self.client.helm_template(
-                    name,
-                    &chart_path,
-                    values_path.as_deref(),
-                ).await?;
+                let manifest_yaml = self
+                    .client
+                    .helm_template(name, &chart_path, values_path.as_deref())
+                    .await?;
 
                 self.client.apply_manifest(&manifest_yaml).await?;
                 manifests.push(manifest_yaml);
-                self.manifests.write().await.insert(name.to_string(), manifests);
+                self.manifests
+                    .write()
+                    .await
+                    .insert(name.to_string(), manifests);
 
                 let label = format!("app={}", name);
                 tracing::info!("[{}] waiting for pod to be ready...", name);
@@ -97,14 +117,21 @@ impl K8sRuntime {
 
             if let Some(ref kustomize_dir) = k8s_cfg.kustomize_dir {
                 // Use Kustomize
-                tracing::info!("[{}] generating manifests from Kustomize: {}", name, kustomize_dir.display());
+                tracing::info!(
+                    "[{}] generating manifests from Kustomize: {}",
+                    name,
+                    kustomize_dir.display()
+                );
                 let kustomize_path = config_dir.join(kustomize_dir);
 
                 let manifest_yaml = self.client.kustomize_build(&kustomize_path).await?;
 
                 self.client.apply_manifest(&manifest_yaml).await?;
                 manifests.push(manifest_yaml);
-                self.manifests.write().await.insert(name.to_string(), manifests);
+                self.manifests
+                    .write()
+                    .await
+                    .insert(name.to_string(), manifests);
 
                 let label = format!("app={}", name);
                 tracing::info!("[{}] waiting for pod to be ready...", name);
@@ -117,7 +144,8 @@ impl K8sRuntime {
         // Default: generate manifests from A3sfile.hcl
         // Load secrets (from secret_file or inline secrets map)
         let secrets = self.load_secrets(svc, config_dir).await?;
-        if let Some(secret_manifest) = ManifestGenerator::generate_secret(name, &secrets, namespace) {
+        if let Some(secret_manifest) = ManifestGenerator::generate_secret(name, &secrets, namespace)
+        {
             self.client.apply_manifest(&secret_manifest).await?;
             manifests.push(secret_manifest);
         }
@@ -135,7 +163,10 @@ impl K8sRuntime {
         self.client.apply_manifest(&service).await?;
         manifests.push(service);
 
-        self.manifests.write().await.insert(name.to_string(), manifests);
+        self.manifests
+            .write()
+            .await
+            .insert(name.to_string(), manifests);
 
         let label = format!("app={}", name);
         tracing::info!("[{}] waiting for pod to be ready...", name);
@@ -146,7 +177,11 @@ impl K8sRuntime {
     }
 
     /// Load secrets from secret_file or inline secrets map.
-    async fn load_secrets(&self, svc: &ServiceDef, config_dir: &std::path::Path) -> Result<std::collections::HashMap<String, String>> {
+    async fn load_secrets(
+        &self,
+        svc: &ServiceDef,
+        config_dir: &std::path::Path,
+    ) -> Result<std::collections::HashMap<String, String>> {
         let k8s_cfg = match &svc.k8s {
             Some(k) => k,
             None => return Ok(std::collections::HashMap::new()),
@@ -163,10 +198,13 @@ impl K8sRuntime {
                 config_dir.join(secret_file)
             };
 
-            let content = tokio::fs::read_to_string(&path).await
-                .map_err(|e| crate::error::DevError::Config(format!(
-                    "failed to read secret_file {}: {}", path.display(), e
-                )))?;
+            let content = tokio::fs::read_to_string(&path).await.map_err(|e| {
+                crate::error::DevError::Config(format!(
+                    "failed to read secret_file {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
 
             for line in content.lines() {
                 let line = line.trim();
@@ -183,7 +221,12 @@ impl K8sRuntime {
     }
 
     /// Rebuild image (if dockerfile configured) then rollout restart.
-    pub async fn rebuild_and_restart(&self, name: &str, svc: &ServiceDef, config_dir: &std::path::Path) -> Result<()> {
+    pub async fn rebuild_and_restart(
+        &self,
+        name: &str,
+        svc: &ServiceDef,
+        config_dir: &std::path::Path,
+    ) -> Result<()> {
         tracing::info!("[{}] rebuilding image and restarting", name);
         self.build_and_push(name, svc, config_dir).await?;
         self.client.rollout_restart(name).await?;
@@ -196,8 +239,12 @@ impl K8sRuntime {
         tracing::info!("[{}] deleting from kubernetes", name);
         self.client.delete_resource("service", name).await?;
         self.client.delete_resource("deployment", name).await?;
-        self.client.delete_resource("configmap", &format!("{}-config", name)).await?;
-        self.client.delete_resource("secret", &format!("{}-secret", name)).await?;
+        self.client
+            .delete_resource("configmap", &format!("{}-config", name))
+            .await?;
+        self.client
+            .delete_resource("secret", &format!("{}-secret", name))
+            .await?;
         self.manifests.write().await.shift_remove(name);
         tracing::info!("[{}] deleted successfully", name);
         Ok(())
@@ -219,7 +266,8 @@ impl K8sRuntime {
 
     /// Deploy Ingress for all services with subdomains.
     pub async fn deploy_ingress(&self, services: &IndexMap<String, ServiceDef>) -> Result<()> {
-        if let Some(ingress) = ManifestGenerator::generate_ingress(services, &self.client.namespace) {
+        if let Some(ingress) = ManifestGenerator::generate_ingress(services, &self.client.namespace)
+        {
             tracing::info!("deploying ingress");
             self.client.apply_manifest(&ingress).await?;
             tracing::info!("ingress deployed");

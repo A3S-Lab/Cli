@@ -260,14 +260,12 @@ async fn run(cli: Cli) -> Result<()> {
                 // Check if kubectl is available
                 if !k8s::K8sClient::check_available().await? {
                     return Err(DevError::Config(
-                        "kubectl not found. Please install kubectl to use k8s runtime mode.".into()
+                        "kubectl not found. Please install kubectl to use k8s runtime mode.".into(),
                     ));
                 }
 
-                let k8s_client = k8s::K8sClient::new(
-                    cfg.dev.k8s_context.clone(),
-                    cfg.dev.k8s_namespace.clone(),
-                );
+                let k8s_client =
+                    k8s::K8sClient::new(cfg.dev.k8s_context.clone(), cfg.dev.k8s_namespace.clone());
                 let (log, log_rx) = crate::log::LogAggregator::new();
                 let log = std::sync::Arc::new(log);
                 tokio::spawn(crate::log::LogAggregator::print_loop(log_rx));
@@ -279,12 +277,21 @@ async fn run(cli: Cli) -> Result<()> {
                     println!("{} context: {}", "→".cyan(), ctx);
                 }
 
-                let config_dir = cli.file.parent()
+                let config_dir = cli
+                    .file
+                    .parent()
                     .unwrap_or(std::path::Path::new("."))
                     .to_path_buf();
 
                 // Deploy services to k8s
-                return run_k8s_mode(cfg, k8s_runtime, config_dir, services.clone(), label.clone()).await;
+                return run_k8s_mode(
+                    cfg,
+                    k8s_runtime,
+                    config_dir,
+                    services.clone(),
+                    label.clone(),
+                )
+                .await;
             }
 
             // Local process mode (default)
@@ -297,7 +304,7 @@ async fn run(cli: Cli) -> Result<()> {
                 Arc::new(
                     proxy::ProxyRouter::new(cfg.dev.proxy_port)
                         .with_https(cert, key)
-                        .map_err(|e| DevError::Config(format!("failed to setup HTTPS: {}", e)))?
+                        .map_err(|e| DevError::Config(format!("failed to setup HTTPS: {}", e)))?,
                 )
             } else {
                 Arc::new(proxy::ProxyRouter::new(cfg.dev.proxy_port))
@@ -306,7 +313,12 @@ async fn run(cli: Cli) -> Result<()> {
             let protocol = if cfg.dev.https { "https" } else { "http" };
             let proxy_run = proxy.clone();
             tokio::spawn(async move { proxy_run.run().await });
-            println!("{} proxy  {}://*.localhost:{}", "→".cyan(), protocol, proxy_port);
+            println!(
+                "{} proxy  {}://*.localhost:{}",
+                "→".cyan(),
+                protocol,
+                proxy_port
+            );
 
             let (sup, _) = Supervisor::new(cfg.clone(), proxy, cli.file.clone(), env.clone());
             let sup: Arc<Supervisor> = Arc::new(sup);
@@ -422,29 +434,53 @@ async fn run(cli: Cli) -> Result<()> {
 
                     // Check every non-disabled service has k8s.image
                     for (name, svc) in &cfg.service {
-                        if svc.disabled { continue; }
+                        if svc.disabled {
+                            continue;
+                        }
                         match &svc.k8s {
                             Some(k) => {
                                 println!("  {} [{name}] image: {}", "✓".green(), k.image);
                                 // Check dockerfile exists if specified
                                 if let Some(ref df) = k.dockerfile {
-                                    let path = if df.is_absolute() { df.clone() } else {
-                                        cli.file.parent().unwrap_or(std::path::Path::new(".")).join(df)
+                                    let path = if df.is_absolute() {
+                                        df.clone()
+                                    } else {
+                                        cli.file
+                                            .parent()
+                                            .unwrap_or(std::path::Path::new("."))
+                                            .join(df)
                                     };
                                     if path.exists() {
-                                        println!("  {} [{name}] dockerfile found: {}", "✓".green(), path.display());
+                                        println!(
+                                            "  {} [{name}] dockerfile found: {}",
+                                            "✓".green(),
+                                            path.display()
+                                        );
                                     } else {
-                                        println!("  {} [{name}] dockerfile not found: {}", "✗".red(), path.display());
+                                        println!(
+                                            "  {} [{name}] dockerfile not found: {}",
+                                            "✗".red(),
+                                            path.display()
+                                        );
                                         all_ok = false;
                                     }
                                 }
                                 // Check Helm chart exists if specified
                                 if let Some(ref chart) = k.helm_chart {
-                                    let path = if chart.is_absolute() { chart.clone() } else {
-                                        cli.file.parent().unwrap_or(std::path::Path::new(".")).join(chart)
+                                    let path = if chart.is_absolute() {
+                                        chart.clone()
+                                    } else {
+                                        cli.file
+                                            .parent()
+                                            .unwrap_or(std::path::Path::new("."))
+                                            .join(chart)
                                     };
                                     if path.exists() && path.join("Chart.yaml").exists() {
-                                        println!("  {} [{name}] Helm chart found: {}", "✓".green(), path.display());
+                                        println!(
+                                            "  {} [{name}] Helm chart found: {}",
+                                            "✓".green(),
+                                            path.display()
+                                        );
                                     } else {
                                         println!("  {} [{name}] Helm chart not found or missing Chart.yaml: {}", "✗".red(), path.display());
                                         all_ok = false;
@@ -458,11 +494,20 @@ async fn run(cli: Cli) -> Result<()> {
                                 }
                                 // Check Kustomize directory exists if specified
                                 if let Some(ref kdir) = k.kustomize_dir {
-                                    let path = if kdir.is_absolute() { kdir.clone() } else {
-                                        cli.file.parent().unwrap_or(std::path::Path::new(".")).join(kdir)
+                                    let path = if kdir.is_absolute() {
+                                        kdir.clone()
+                                    } else {
+                                        cli.file
+                                            .parent()
+                                            .unwrap_or(std::path::Path::new("."))
+                                            .join(kdir)
                                     };
                                     if path.exists() && path.join("kustomization.yaml").exists() {
-                                        println!("  {} [{name}] Kustomize dir found: {}", "✓".green(), path.display());
+                                        println!(
+                                            "  {} [{name}] Kustomize dir found: {}",
+                                            "✓".green(),
+                                            path.display()
+                                        );
                                     } else {
                                         println!("  {} [{name}] Kustomize dir not found or missing kustomization.yaml: {}", "✗".red(), path.display());
                                         all_ok = false;
@@ -470,58 +515,95 @@ async fn run(cli: Cli) -> Result<()> {
                                 }
                                 // Check Helm values file exists if specified
                                 if let Some(ref values) = k.helm_values {
-                                    let path = if values.is_absolute() { values.clone() } else {
-                                        cli.file.parent().unwrap_or(std::path::Path::new(".")).join(values)
+                                    let path = if values.is_absolute() {
+                                        values.clone()
+                                    } else {
+                                        cli.file
+                                            .parent()
+                                            .unwrap_or(std::path::Path::new("."))
+                                            .join(values)
                                     };
                                     if path.exists() {
-                                        println!("  {} [{name}] Helm values file found: {}", "✓".green(), path.display());
+                                        println!(
+                                            "  {} [{name}] Helm values file found: {}",
+                                            "✓".green(),
+                                            path.display()
+                                        );
                                     } else {
-                                        println!("  {} [{name}] Helm values file not found: {}", "✗".red(), path.display());
+                                        println!(
+                                            "  {} [{name}] Helm values file not found: {}",
+                                            "✗".red(),
+                                            path.display()
+                                        );
                                         all_ok = false;
                                     }
                                 }
                             }
                             None => {
-                                println!("  {} [{name}] missing k8s {{ image = \"...\" }} block", "✗".red());
+                                println!(
+                                    "  {} [{name}] missing k8s {{ image = \"...\" }} block",
+                                    "✗".red()
+                                );
                                 all_ok = false;
                             }
                         }
                     }
 
                     // Check cluster is reachable
-                    let client = k8s::K8sClient::new(cfg.dev.k8s_context.clone(), cfg.dev.k8s_namespace.clone());
+                    let client = k8s::K8sClient::new(
+                        cfg.dev.k8s_context.clone(),
+                        cfg.dev.k8s_namespace.clone(),
+                    );
                     let mut cmd = tokio::process::Command::new("kubectl");
                     cmd.arg("cluster-info");
                     if let Some(ref ctx) = cfg.dev.k8s_context {
                         cmd.arg("--context").arg(ctx);
                     }
-                    cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                    cmd.stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null());
                     let _ = client; // suppress unused warning
                     match cmd.status().await {
                         Ok(s) if s.success() => println!("  {} cluster reachable", "✓".green()),
                         _ => {
-                            println!("  {} cluster not reachable (context: {})", "✗".red(),
-                                cfg.dev.k8s_context.as_deref().unwrap_or("default"));
+                            println!(
+                                "  {} cluster not reachable (context: {})",
+                                "✗".red(),
+                                cfg.dev.k8s_context.as_deref().unwrap_or("default")
+                            );
                             all_ok = false;
                         }
                     }
                 } else {
                     for (name, svc) in &cfg.service {
-                        if svc.disabled { continue; }
+                        if svc.disabled {
+                            continue;
+                        }
                         // Check that the binary in `cmd` exists on PATH.
                         let binary = svc.cmd.split_whitespace().next().unwrap_or("");
                         if which_binary(binary) {
                             println!("  {} [{name}] binary '{binary}' found", "✓".green());
                         } else {
-                            println!("  {} [{name}] binary '{}' not found on PATH", "✗".red(), binary);
+                            println!(
+                                "  {} [{name}] binary '{}' not found on PATH",
+                                "✗".red(),
+                                binary
+                            );
                             all_ok = false;
                         }
                         // Check that a fixed port is not already bound.
                         if svc.port != 0 {
                             if port_available(svc.port) {
-                                println!("  {} [{name}] port {} is available", "✓".green(), svc.port);
+                                println!(
+                                    "  {} [{name}] port {} is available",
+                                    "✓".green(),
+                                    svc.port
+                                );
                             } else {
-                                println!("  {} [{name}] port {} is already in use", "✗".red(), svc.port);
+                                println!(
+                                    "  {} [{name}] port {} is already in use",
+                                    "✗".red(),
+                                    svc.port
+                                );
                                 all_ok = false;
                             }
                         }
@@ -573,9 +655,7 @@ async fn run(cli: Cli) -> Result<()> {
                             };
                             let (cpu_str, mem_str) = row
                                 .pid
-                                .and_then(|pid| {
-                                    query_process_stats_delta(pid, &mut prev_ticks)
-                                })
+                                .and_then(|pid| query_process_stats_delta(pid, &mut prev_ticks))
                                 .map(|(cpu, mem)| (format!("{cpu:.1}%"), format_bytes(mem)))
                                 .unwrap_or_else(|| ("-".into(), "-".into()));
                             println!(
@@ -606,7 +686,11 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
 
-        Commands::Status { json, watch, interval } => {
+        Commands::Status {
+            json,
+            watch,
+            interval,
+        } => {
             // k8s mode: show pod status via kubectl
             if let Ok(cfg) = DevConfig::from_file(&cli.file) {
                 if cfg.dev.runtime == "k8s" {
@@ -679,7 +763,11 @@ async fn run(cli: Cli) -> Result<()> {
                                     uptime.dimmed(),
                                 );
                             }
-                            println!("\n{} refresh every {}s — Ctrl+C to exit", "·".dimmed(), interval);
+                            println!(
+                                "\n{} refresh every {}s — Ctrl+C to exit",
+                                "·".dimmed(),
+                                interval
+                            );
                         }
                         Err(e) => {
                             eprintln!("{} {e}", "[a3s]".red().bold());
@@ -804,7 +892,10 @@ async fn run(cli: Cli) -> Result<()> {
             // k8s mode: rollout restart
             if let Ok(cfg) = DevConfig::from_file(&cli.file) {
                 if cfg.dev.runtime == "k8s" {
-                    let client = k8s::K8sClient::new(cfg.dev.k8s_context.clone(), cfg.dev.k8s_namespace.clone());
+                    let client = k8s::K8sClient::new(
+                        cfg.dev.k8s_context.clone(),
+                        cfg.dev.k8s_namespace.clone(),
+                    );
                     client.rollout_restart(service).await?;
                     println!("{} restarted {}", "✓".green(), service.cyan());
                     return Ok(());
@@ -820,35 +911,33 @@ async fn run(cli: Cli) -> Result<()> {
             println!("{} restarted {}", "✓".green(), service.cyan());
         }
 
-        Commands::Reload => {
-            match ipc_send(IpcRequest::Reload, &sock).await? {
-                IpcResponse::Reloaded {
-                    started,
-                    stopped,
-                    restarted,
-                } => {
-                    println!("{} config reloaded", "✓".green());
-                    for s in &stopped {
-                        println!("  {} stopped  {}", "–".red(), s.dimmed());
-                    }
-                    for s in &restarted {
-                        println!("  {} restarted {}", "↺".yellow(), s.cyan());
-                    }
-                    for s in &started {
-                        println!("  {} started  {}", "+".green(), s.cyan());
-                    }
-                    if stopped.is_empty() && restarted.is_empty() && started.is_empty() {
-                        println!("  no changes");
-                    }
+        Commands::Reload => match ipc_send(IpcRequest::Reload, &sock).await? {
+            IpcResponse::Reloaded {
+                started,
+                stopped,
+                restarted,
+            } => {
+                println!("{} config reloaded", "✓".green());
+                for s in &stopped {
+                    println!("  {} stopped  {}", "–".red(), s.dimmed());
                 }
-                IpcResponse::Error { msg } => {
-                    return Err(DevError::Config(format!("reload failed: {msg}")));
+                for s in &restarted {
+                    println!("  {} restarted {}", "↺".yellow(), s.cyan());
                 }
-                _ => {
-                    println!("{} config reloaded", "✓".green());
+                for s in &started {
+                    println!("  {} started  {}", "+".green(), s.cyan());
+                }
+                if stopped.is_empty() && restarted.is_empty() && started.is_empty() {
+                    println!("  no changes");
                 }
             }
-        }
+            IpcResponse::Error { msg } => {
+                return Err(DevError::Config(format!("reload failed: {msg}")));
+            }
+            _ => {
+                println!("{} config reloaded", "✓".green());
+            }
+        },
 
         Commands::Logs {
             service,
@@ -884,22 +973,34 @@ async fn run(cli: Cli) -> Result<()> {
             // Parse ports: <local-port>:<remote-port>
             let parts: Vec<&str> = ports.split(':').collect();
             if parts.len() != 2 {
-                return Err(DevError::Config(
-                    format!("invalid port mapping '{}', expected format: <local-port>:<remote-port>", ports)
-                ));
+                return Err(DevError::Config(format!(
+                    "invalid port mapping '{}', expected format: <local-port>:<remote-port>",
+                    ports
+                )));
             }
 
-            let local_port: u16 = parts[0].parse()
+            let local_port: u16 = parts[0]
+                .parse()
                 .map_err(|_| DevError::Config(format!("invalid local port: {}", parts[0])))?;
-            let remote_port: u16 = parts[1].parse()
+            let remote_port: u16 = parts[1]
+                .parse()
                 .map_err(|_| DevError::Config(format!("invalid remote port: {}", parts[1])))?;
 
             // Check if service exists
             if !cfg.service.contains_key(service) {
-                return Err(DevError::Config(format!("service '{}' not found in A3sfile.hcl", service)));
+                return Err(DevError::Config(format!(
+                    "service '{}' not found in A3sfile.hcl",
+                    service
+                )));
             }
 
-            println!("{} forwarding localhost:{} -> {}:{}", "→".cyan(), local_port, service, remote_port);
+            println!(
+                "{} forwarding localhost:{} -> {}:{}",
+                "→".cyan(),
+                local_port,
+                service,
+                remote_port
+            );
             println!("{} press Ctrl+C to stop", "·".dimmed());
 
             // Run kubectl port-forward
@@ -907,14 +1008,16 @@ async fn run(cli: Cli) -> Result<()> {
             cmd.arg("port-forward")
                 .arg(format!("deployment/{}", service))
                 .arg(format!("{}:{}", local_port, remote_port))
-                .arg("-n").arg(&cfg.dev.k8s_namespace);
+                .arg("-n")
+                .arg(&cfg.dev.k8s_namespace);
 
             if let Some(ref ctx) = cfg.dev.k8s_context {
                 cmd.arg("--context").arg(ctx);
             }
 
-            let mut child = cmd.spawn()
-                .map_err(|e| DevError::Config(format!("failed to start kubectl port-forward: {}", e)))?;
+            let mut child = cmd.spawn().map_err(|e| {
+                DevError::Config(format!("failed to start kubectl port-forward: {}", e))
+            })?;
 
             // Wait for Ctrl+C
             tokio::select! {
@@ -1035,7 +1138,8 @@ async fn run(cli: Cli) -> Result<()> {
 
         Commands::Run { service, cmd } => {
             let cfg = DevConfig::from_file(&cli.file)?;
-            let mut env: std::collections::HashMap<String, String> = if let Some(svc_name) = service {
+            let mut env: std::collections::HashMap<String, String> = if let Some(svc_name) = service
+            {
                 let svc = cfg
                     .service
                     .get(svc_name.as_str())
@@ -1054,10 +1158,8 @@ async fn run(cli: Cli) -> Result<()> {
             if let Ok(IpcResponse::Status { rows }) = ipc_send(IpcRequest::Status, &sock).await {
                 for row in &rows {
                     if row.port != 0 {
-                        let key = format!(
-                            "PORT_{}",
-                            row.name.to_uppercase().replace(['-', '.'], "_")
-                        );
+                        let key =
+                            format!("PORT_{}", row.name.to_uppercase().replace(['-', '.'], "_"));
                         env.entry(key).or_insert_with(|| row.port.to_string());
                     }
                 }
@@ -1086,10 +1188,8 @@ async fn run(cli: Cli) -> Result<()> {
             if let Ok(IpcResponse::Status { rows }) = ipc_send(IpcRequest::Status, &sock).await {
                 for row in &rows {
                     if row.port != 0 {
-                        let key = format!(
-                            "PORT_{}",
-                            row.name.to_uppercase().replace(['-', '.'], "_")
-                        );
+                        let key =
+                            format!("PORT_{}", row.name.to_uppercase().replace(['-', '.'], "_"));
                         env.entry(key).or_insert_with(|| row.port.to_string());
                     }
                 }
@@ -1137,9 +1237,7 @@ fn filter_by_labels(cfg: &DevConfig, labels: &[String]) -> Vec<String> {
     }
     cfg.service
         .iter()
-        .filter(|(_, svc)| {
-            labels.iter().any(|label| svc.labels.contains(label))
-        })
+        .filter(|(_, svc)| labels.iter().any(|label| svc.labels.contains(label)))
         .map(|(name, _)| name.clone())
         .collect()
 }
@@ -1380,7 +1478,9 @@ fn port_available(port: u16) -> bool {
 /// Deterministically map a service name to one of the log palette colors.
 #[allow(dead_code)]
 fn service_color(name: &str) -> usize {
-    name.bytes().fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize))
+    name.bytes().fold(0usize, |acc, b| {
+        acc.wrapping_mul(31).wrapping_add(b as usize)
+    })
 }
 
 /// Apply a color from the log palette to a string by index.
@@ -1482,7 +1582,6 @@ fn query_process_stats_delta(
     query_process_stats(pid)
 }
 
-
 fn format_bytes(bytes: u64) -> String {
     if bytes < 1024 * 1024 {
         format!("{} KB", bytes / 1024)
@@ -1531,9 +1630,12 @@ async fn k8s_down(cfg: &DevConfig, services: &[String], label: &[String]) -> Res
 /// k8s status: show pod status via kubectl get pods.
 async fn k8s_status(cfg: &DevConfig, json: bool) -> Result<()> {
     let mut cmd = std::process::Command::new("kubectl");
-    cmd.arg("get").arg("pods")
-        .arg("-l").arg("managed-by=a3s")
-        .arg("-n").arg(&cfg.dev.k8s_namespace);
+    cmd.arg("get")
+        .arg("pods")
+        .arg("-l")
+        .arg("managed-by=a3s")
+        .arg("-n")
+        .arg(&cfg.dev.k8s_namespace);
 
     if let Some(ref ctx) = cfg.dev.k8s_context {
         cmd.arg("--context").arg(ctx);
@@ -1545,7 +1647,8 @@ async fn k8s_status(cfg: &DevConfig, json: bool) -> Result<()> {
         cmd.arg("-o").arg("wide");
     }
 
-    let status = cmd.status()
+    let status = cmd
+        .status()
         .map_err(|e| DevError::Config(format!("kubectl get pods failed: {}", e)))?;
 
     if !status.success() {
@@ -1558,16 +1661,21 @@ async fn k8s_status(cfg: &DevConfig, json: bool) -> Result<()> {
 async fn k8s_top(cfg: &DevConfig, interval: u64) -> Result<()> {
     loop {
         let mut cmd = tokio::process::Command::new("kubectl");
-        cmd.arg("top").arg("pods")
-            .arg("-l").arg("managed-by=a3s")
-            .arg("-n").arg(&cfg.dev.k8s_namespace)
+        cmd.arg("top")
+            .arg("pods")
+            .arg("-l")
+            .arg("managed-by=a3s")
+            .arg("-n")
+            .arg(&cfg.dev.k8s_namespace)
             .arg("--no-headers");
 
         if let Some(ref ctx) = cfg.dev.k8s_context {
             cmd.arg("--context").arg(ctx);
         }
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| DevError::Config(format!("kubectl top pods failed: {}", e)))?;
 
         print!("\x1b[2J\x1b[H");
@@ -1586,9 +1694,13 @@ async fn k8s_top(cfg: &DevConfig, interval: u64) -> Result<()> {
                 if parts.len() >= 3 {
                     let cpu_colored = if parts[1].ends_with('m') {
                         let millis: u64 = parts[1].trim_end_matches('m').parse().unwrap_or(0);
-                        if millis > 500 { parts[1].red().to_string() }
-                        else if millis > 200 { parts[1].yellow().to_string() }
-                        else { parts[1].green().to_string() }
+                        if millis > 500 {
+                            parts[1].red().to_string()
+                        } else if millis > 200 {
+                            parts[1].yellow().to_string()
+                        } else {
+                            parts[1].green().to_string()
+                        }
                     } else {
                         parts[1].to_string()
                     };
@@ -1596,12 +1708,18 @@ async fn k8s_top(cfg: &DevConfig, interval: u64) -> Result<()> {
                 }
             }
             if stdout.trim().is_empty() {
-                println!("{}", "no pods found (is metrics-server installed?)".dimmed());
+                println!(
+                    "{}",
+                    "no pods found (is metrics-server installed?)".dimmed()
+                );
             }
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             println!("{} {}", "error:".red(), stderr.trim());
-            println!("{}", "hint: kubectl top requires metrics-server to be installed".dimmed());
+            println!(
+                "{}",
+                "hint: kubectl top requires metrics-server to be installed".dimmed()
+            );
         }
 
         println!(
@@ -1639,8 +1757,10 @@ async fn k8s_logs(
     for svc_name in targets {
         let mut cmd = tokio::process::Command::new("kubectl");
         cmd.arg("logs")
-            .arg("-l").arg(format!("app={}", svc_name))
-            .arg("-n").arg(&cfg.dev.k8s_namespace)
+            .arg("-l")
+            .arg(format!("app={}", svc_name))
+            .arg("-n")
+            .arg(&cfg.dev.k8s_namespace)
             .arg(format!("--tail={}", tail));
 
         if let Some(ref ctx) = cfg.dev.k8s_context {
@@ -1651,13 +1771,16 @@ async fn k8s_logs(
         }
 
         cmd.stdout(std::process::Stdio::piped())
-           .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::null());
 
         let grep = grep.map(|s| s.to_lowercase());
         let handle = tokio::spawn(async move {
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
-                Err(e) => { eprintln!("kubectl logs failed: {}", e); return; }
+                Err(e) => {
+                    eprintln!("kubectl logs failed: {}", e);
+                    return;
+                }
             };
             if let Some(stdout) = child.stdout.take() {
                 let mut lines = BufReader::new(stdout).lines();
@@ -1680,7 +1803,9 @@ async fn k8s_logs(
             _ = async { for h in handles { let _ = h.await; } } => {}
         }
     } else {
-        for h in handles { let _ = h.await; }
+        for h in handles {
+            let _ = h.await;
+        }
     }
 
     Ok(())
@@ -1710,9 +1835,7 @@ async fn run_k8s_mode(
     // Remove duplicates and filter disabled services
     target_services.sort();
     target_services.dedup();
-    target_services.retain(|name| {
-        cfg.service.get(name).map(|s| !s.disabled).unwrap_or(false)
-    });
+    target_services.retain(|name| cfg.service.get(name).map(|s| !s.disabled).unwrap_or(false));
 
     if target_services.is_empty() {
         return Err(DevError::Config("no services to deploy".into()));
@@ -1724,7 +1847,11 @@ async fn run_k8s_mode(
     // Get deployment order
     let target_refs: Vec<&str> = target_services.iter().map(|s| s.as_str()).collect();
     let deploy_order = if target_services.len() == cfg.service.len() {
-        graph.start_order().iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        graph
+            .start_order()
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
     } else {
         graph.transitive_start_order(&target_refs)
     };
@@ -1733,37 +1860,62 @@ async fn run_k8s_mode(
 
     // Deploy services in dependency order
     for svc_name in &deploy_order {
-        let svc = cfg.service.get(svc_name).ok_or_else(|| {
-            DevError::Config(format!("service {} not found", svc_name))
-        })?;
+        let svc = cfg
+            .service
+            .get(svc_name)
+            .ok_or_else(|| DevError::Config(format!("service {} not found", svc_name)))?;
 
         println!("{} {} deploying...", "→".cyan(), svc_name);
-        k8s_runtime.start_service(svc_name, svc, &config_dir).await?;
+        k8s_runtime
+            .start_service(svc_name, svc, &config_dir)
+            .await?;
         println!("{} {} running", "✓".green(), svc_name);
     }
 
     // Deploy ingress if any service has subdomain
     k8s_runtime.deploy_ingress(&cfg.service).await?;
 
-    println!("\n{} all services deployed successfully", "✓".green().bold());
+    println!(
+        "\n{} all services deployed successfully",
+        "✓".green().bold()
+    );
 
     // Start file watchers for services with watch config
-    let watched: Vec<String> = deploy_order.iter()
-        .filter(|name| cfg.service.get(*name).and_then(|s| s.watch.as_ref()).is_some())
+    let watched: Vec<String> = deploy_order
+        .iter()
+        .filter(|name| {
+            cfg.service
+                .get(*name)
+                .and_then(|s| s.watch.as_ref())
+                .is_some()
+        })
         .cloned()
         .collect();
 
     if watched.is_empty() {
         println!("\nTo view logs:");
-        println!("  kubectl logs -l managed-by=a3s -n {} --tail=100 -f", cfg.dev.k8s_namespace);
+        println!(
+            "  kubectl logs -l managed-by=a3s -n {} --tail=100 -f",
+            cfg.dev.k8s_namespace
+        );
         println!("\nTo check status:");
-        println!("  kubectl get pods -l managed-by=a3s -n {}", cfg.dev.k8s_namespace);
+        println!(
+            "  kubectl get pods -l managed-by=a3s -n {}",
+            cfg.dev.k8s_namespace
+        );
         println!("\nTo delete all:");
-        println!("  kubectl delete all -l managed-by=a3s -n {}", cfg.dev.k8s_namespace);
+        println!(
+            "  kubectl delete all -l managed-by=a3s -n {}",
+            cfg.dev.k8s_namespace
+        );
         return Ok(());
     }
 
-    println!("{} watching {} services for changes (Ctrl+C to stop)", "→".cyan(), watched.len());
+    println!(
+        "{} watching {} services for changes (Ctrl+C to stop)",
+        "→".cyan(),
+        watched.len()
+    );
 
     let (watch_tx, mut watch_rx) = tokio::sync::mpsc::channel::<String>(64);
     let k8s_runtime = Arc::new(k8s_runtime);
@@ -1773,8 +1925,16 @@ async fn run_k8s_mode(
     for svc_name in &watched {
         let svc = cfg.service.get(svc_name).unwrap();
         let watch_cfg = svc.watch.as_ref().unwrap();
-        let paths: Vec<std::path::PathBuf> = watch_cfg.paths.iter()
-            .map(|p| if p.is_absolute() { p.clone() } else { config_dir.join(p) })
+        let paths: Vec<std::path::PathBuf> = watch_cfg
+            .paths
+            .iter()
+            .map(|p| {
+                if p.is_absolute() {
+                    p.clone()
+                } else {
+                    config_dir.join(p)
+                }
+            })
             .collect();
         let stop = watcher::spawn_watcher(
             svc_name.clone(),

@@ -42,16 +42,26 @@ pub enum IpcRequest {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IpcResponse {
-    Status { rows: Vec<StatusRow> },
+    Status {
+        rows: Vec<StatusRow>,
+    },
     Ok,
-    Error { msg: String },
-    LogLine { service: String, line: String, color_idx: usize },
+    Error {
+        msg: String,
+    },
+    LogLine {
+        service: String,
+        line: String,
+        color_idx: usize,
+    },
     Reloaded {
         started: Vec<String>,
         stopped: Vec<String>,
         restarted: Vec<String>,
     },
-    Stopped { services: Vec<String> },
+    Stopped {
+        services: Vec<String>,
+    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -141,7 +151,12 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         let decoded: IpcResponse = serde_json::from_str(&json).unwrap();
-        if let IpcResponse::LogLine { service, line, color_idx } = decoded {
+        if let IpcResponse::LogLine {
+            service,
+            line,
+            color_idx,
+        } = decoded
+        {
             assert_eq!(service, "api");
             assert_eq!(line, "started");
             assert_eq!(color_idx, 3);

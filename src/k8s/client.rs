@@ -1,9 +1,9 @@
+use crate::error::{DevError, Result};
+use crate::log::LogAggregator;
 use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use crate::error::{DevError, Result};
-use crate::log::LogAggregator;
 
 /// Kubernetes client - wraps kubectl commands.
 #[derive(Debug, Clone)]
@@ -45,21 +45,29 @@ impl K8sClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| DevError::Config(format!("failed to spawn kubectl: {}", e)))?;
 
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
-            stdin.write_all(yaml.as_bytes()).await
+            stdin
+                .write_all(yaml.as_bytes())
+                .await
                 .map_err(|e| DevError::Config(format!("failed to write manifest: {}", e)))?;
         }
 
-        let output = child.wait_with_output().await
+        let output = child
+            .wait_with_output()
+            .await
             .map_err(|e| DevError::Config(format!("kubectl apply failed: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DevError::Config(format!("kubectl apply failed: {}", stderr)));
+            return Err(DevError::Config(format!(
+                "kubectl apply failed: {}",
+                stderr
+            )));
         }
 
         Ok(())
@@ -76,7 +84,9 @@ impl K8sClient {
         cmd.arg("--namespace").arg(&self.namespace);
         cmd.arg("--ignore-not-found=true");
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| DevError::Config(format!("kubectl delete failed: {}", e)))?;
 
         if !output.status.success() {
@@ -91,8 +101,10 @@ impl K8sClient {
     #[allow(dead_code)]
     pub async fn get_pod_status(&self, label: &str) -> Result<PodStatus> {
         let mut cmd = Command::new("kubectl");
-        cmd.arg("get").arg("pods")
-            .arg("-l").arg(label)
+        cmd.arg("get")
+            .arg("pods")
+            .arg("-l")
+            .arg(label)
             .arg("--output=jsonpath={.items[0].status.phase}");
 
         if let Some(ref ctx) = self.context {
@@ -100,7 +112,9 @@ impl K8sClient {
         }
         cmd.arg("--namespace").arg(&self.namespace);
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| DevError::Config(format!("kubectl get pods failed: {}", e)))?;
 
         if !output.status.success() {
@@ -120,8 +134,10 @@ impl K8sClient {
     /// Wait for pod to be ready (with timeout).
     pub async fn wait_for_ready(&self, label: &str, timeout_secs: u64) -> Result<()> {
         let mut cmd = Command::new("kubectl");
-        cmd.arg("wait").arg("pods")
-            .arg("-l").arg(label)
+        cmd.arg("wait")
+            .arg("pods")
+            .arg("-l")
+            .arg(label)
             .arg("--for=condition=Ready")
             .arg(format!("--timeout={}s", timeout_secs));
 
@@ -130,7 +146,9 @@ impl K8sClient {
         }
         cmd.arg("--namespace").arg(&self.namespace);
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| DevError::Config(format!("kubectl wait failed: {}", e)))?;
 
         if !output.status.success() {
@@ -146,7 +164,8 @@ impl K8sClient {
     pub async fn get_logs(&self, label: &str, tail: usize) -> Result<String> {
         let mut cmd = Command::new("kubectl");
         cmd.arg("logs")
-            .arg("-l").arg(label)
+            .arg("-l")
+            .arg(label)
             .arg(format!("--tail={}", tail));
 
         if let Some(ref ctx) = self.context {
@@ -154,7 +173,9 @@ impl K8sClient {
         }
         cmd.arg("--namespace").arg(&self.namespace);
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| DevError::Config(format!("kubectl logs failed: {}", e)))?;
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -163,20 +184,27 @@ impl K8sClient {
     /// Rollout restart a deployment.
     pub async fn rollout_restart(&self, deployment: &str) -> Result<()> {
         let mut cmd = Command::new("kubectl");
-        cmd.arg("rollout").arg("restart")
-            .arg("deployment").arg(deployment);
+        cmd.arg("rollout")
+            .arg("restart")
+            .arg("deployment")
+            .arg(deployment);
 
         if let Some(ref ctx) = self.context {
             cmd.arg("--context").arg(ctx);
         }
         cmd.arg("--namespace").arg(&self.namespace);
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| DevError::Config(format!("kubectl rollout restart failed: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DevError::Config(format!("rollout restart failed: {}", stderr)));
+            return Err(DevError::Config(format!(
+                "rollout restart failed: {}",
+                stderr
+            )));
         }
 
         Ok(())
@@ -197,8 +225,10 @@ impl K8sClient {
 
         let mut cmd = Command::new("docker");
         cmd.arg("build")
-            .arg("-t").arg(image)
-            .arg("-f").arg(dockerfile)
+            .arg("-t")
+            .arg(image)
+            .arg("-f")
+            .arg(dockerfile)
             .current_dir(context);
 
         // Add build args
@@ -208,10 +238,10 @@ impl K8sClient {
 
         cmd.arg(".");
 
-        cmd.stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| DevError::Config(format!("failed to spawn docker build: {}", e)))?;
 
         // Stream stdout
@@ -248,11 +278,16 @@ impl K8sClient {
             });
         }
 
-        let status = child.wait().await
+        let status = child
+            .wait()
+            .await
             .map_err(|e| DevError::Config(format!("docker build failed: {}", e)))?;
 
         if !status.success() {
-            return Err(DevError::Config(format!("docker build failed with exit code: {:?}", status.code())));
+            return Err(DevError::Config(format!(
+                "docker build failed with exit code: {:?}",
+                status.code()
+            )));
         }
 
         tracing::info!("[{}] image built successfully: {}", service_name, image);
@@ -271,21 +306,29 @@ impl K8sClient {
 
         // docker tag <image> <tagged>
         let tag_status = tokio::process::Command::new("docker")
-            .arg("tag").arg(image).arg(&tagged)
-            .status().await
+            .arg("tag")
+            .arg(image)
+            .arg(&tagged)
+            .status()
+            .await
             .map_err(|e| DevError::Config(format!("docker tag failed: {}", e)))?;
 
         if !tag_status.success() {
-            return Err(DevError::Config(format!("docker tag {} {} failed", image, tagged)));
+            return Err(DevError::Config(format!(
+                "docker tag {} {} failed",
+                image, tagged
+            )));
         }
 
         // docker push <tagged> — stream output
         let mut cmd = tokio::process::Command::new("docker");
-        cmd.arg("push").arg(&tagged)
+        cmd.arg("push")
+            .arg(&tagged)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| DevError::Config(format!("docker push failed: {}", e)))?;
 
         if let Some(stdout) = child.stdout.take() {
@@ -294,8 +337,11 @@ impl K8sClient {
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if let Some(ref l) = log_clone { l.push(&svc, &line, 0); }
-                    else { println!("[{}] {}", svc, line); }
+                    if let Some(ref l) = log_clone {
+                        l.push(&svc, &line, 0);
+                    } else {
+                        println!("[{}] {}", svc, line);
+                    }
                 }
             });
         }
@@ -305,13 +351,18 @@ impl K8sClient {
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if let Some(ref l) = log_clone { l.push(&svc, &line, 0); }
-                    else { eprintln!("[{}] {}", svc, line); }
+                    if let Some(ref l) = log_clone {
+                        l.push(&svc, &line, 0);
+                    } else {
+                        eprintln!("[{}] {}", svc, line);
+                    }
                 }
             });
         }
 
-        let status = child.wait().await
+        let status = child
+            .wait()
+            .await
             .map_err(|e| DevError::Config(format!("docker push failed: {}", e)))?;
 
         if !status.success() {
@@ -333,18 +384,24 @@ impl K8sClient {
         cmd.arg("template")
             .arg(release_name)
             .arg(chart_path)
-            .arg("--namespace").arg(&self.namespace);
+            .arg("--namespace")
+            .arg(&self.namespace);
 
         if let Some(values) = values_file {
             cmd.arg("--values").arg(values);
         }
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| DevError::Config(format!("helm template failed: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DevError::Config(format!("helm template failed: {}", stderr)));
+            return Err(DevError::Config(format!(
+                "helm template failed: {}",
+                stderr
+            )));
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -355,12 +412,17 @@ impl K8sClient {
         let mut cmd = tokio::process::Command::new("kubectl");
         cmd.arg("kustomize").arg(kustomize_dir);
 
-        let output = cmd.output().await
+        let output = cmd
+            .output()
+            .await
             .map_err(|e| DevError::Config(format!("kubectl kustomize failed: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DevError::Config(format!("kubectl kustomize failed: {}", stderr)));
+            return Err(DevError::Config(format!(
+                "kubectl kustomize failed: {}",
+                stderr
+            )));
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())

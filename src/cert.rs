@@ -4,12 +4,9 @@ use std::path::Path;
 
 /// Generate a self-signed certificate for localhost development.
 pub fn generate_self_signed_cert() -> Result<(Vec<u8>, Vec<u8>)> {
-    let mut params = CertificateParams::new(vec![
-        "localhost".to_string(),
-        "*.localhost".to_string(),
-    ]).map_err(|e| {
-        DevError::Config(format!("failed to create certificate params: {}", e))
-    })?;
+    let mut params =
+        CertificateParams::new(vec!["localhost".to_string(), "*.localhost".to_string()])
+            .map_err(|e| DevError::Config(format!("failed to create certificate params: {}", e)))?;
 
     // Set subject
     let mut dn = DistinguishedName::new();
@@ -18,18 +15,19 @@ pub fn generate_self_signed_cert() -> Result<(Vec<u8>, Vec<u8>)> {
     params.distinguished_name = dn;
 
     // Add IP SAN
-    params.subject_alt_names.push(SanType::IpAddress(
-        std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))
-    ));
+    params
+        .subject_alt_names
+        .push(SanType::IpAddress(std::net::IpAddr::V4(
+            std::net::Ipv4Addr::new(127, 0, 0, 1),
+        )));
 
     // Generate certificate
-    let key_pair = rcgen::KeyPair::generate().map_err(|e| {
-        DevError::Config(format!("failed to generate key pair: {}", e))
-    })?;
+    let key_pair = rcgen::KeyPair::generate()
+        .map_err(|e| DevError::Config(format!("failed to generate key pair: {}", e)))?;
 
-    let cert = params.self_signed(&key_pair).map_err(|e| {
-        DevError::Config(format!("failed to generate certificate: {}", e))
-    })?;
+    let cert = params
+        .self_signed(&key_pair)
+        .map_err(|e| DevError::Config(format!("failed to generate certificate: {}", e)))?;
 
     let cert_pem = cert.pem().into_bytes();
     let key_pem = key_pair.serialize_pem().into_bytes();
@@ -45,12 +43,12 @@ pub async fn get_or_create_cert(project_dir: &Path) -> Result<(Vec<u8>, Vec<u8>)
 
     // Check if certificate already exists
     if cert_path.exists() && key_path.exists() {
-        let cert = tokio::fs::read(&cert_path).await.map_err(|e| {
-            DevError::Config(format!("failed to read certificate: {}", e))
-        })?;
-        let key = tokio::fs::read(&key_path).await.map_err(|e| {
-            DevError::Config(format!("failed to read private key: {}", e))
-        })?;
+        let cert = tokio::fs::read(&cert_path)
+            .await
+            .map_err(|e| DevError::Config(format!("failed to read certificate: {}", e)))?;
+        let key = tokio::fs::read(&key_path)
+            .await
+            .map_err(|e| DevError::Config(format!("failed to read private key: {}", e)))?;
         return Ok((cert, key));
     }
 
@@ -58,19 +56,22 @@ pub async fn get_or_create_cert(project_dir: &Path) -> Result<(Vec<u8>, Vec<u8>)
     let (cert, key) = generate_self_signed_cert()?;
 
     // Create .a3s directory if it doesn't exist
-    tokio::fs::create_dir_all(&cert_dir).await.map_err(|e| {
-        DevError::Config(format!("failed to create .a3s directory: {}", e))
-    })?;
+    tokio::fs::create_dir_all(&cert_dir)
+        .await
+        .map_err(|e| DevError::Config(format!("failed to create .a3s directory: {}", e)))?;
 
     // Save certificate and key
-    tokio::fs::write(&cert_path, &cert).await.map_err(|e| {
-        DevError::Config(format!("failed to write certificate: {}", e))
-    })?;
-    tokio::fs::write(&key_path, &key).await.map_err(|e| {
-        DevError::Config(format!("failed to write private key: {}", e))
-    })?;
+    tokio::fs::write(&cert_path, &cert)
+        .await
+        .map_err(|e| DevError::Config(format!("failed to write certificate: {}", e)))?;
+    tokio::fs::write(&key_path, &key)
+        .await
+        .map_err(|e| DevError::Config(format!("failed to write private key: {}", e)))?;
 
-    tracing::info!("generated self-signed certificate at {}", cert_path.display());
+    tracing::info!(
+        "generated self-signed certificate at {}",
+        cert_path.display()
+    );
 
     Ok((cert, key))
 }
@@ -97,8 +98,10 @@ mod tests {
 
         // Check that key starts with PEM header
         let key_str = String::from_utf8_lossy(&key_pem);
-        assert!(key_str.contains("-----BEGIN PRIVATE KEY-----") ||
-                key_str.contains("-----BEGIN RSA PRIVATE KEY-----"));
+        assert!(
+            key_str.contains("-----BEGIN PRIVATE KEY-----")
+                || key_str.contains("-----BEGIN RSA PRIVATE KEY-----")
+        );
     }
 
     #[tokio::test]

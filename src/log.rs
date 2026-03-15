@@ -102,12 +102,7 @@ impl LogAggregator {
     /// Spawn a task that writes log lines for `service` to `path` (append mode).
     /// If `rotate_bytes` is non-zero, the file is rotated (renamed to `<path>.1`)
     /// when it reaches that size.
-    pub fn register_log_file(
-        &self,
-        service: String,
-        path: std::path::PathBuf,
-        rotate_bytes: u64,
-    ) {
+    pub fn register_log_file(&self, service: String, path: std::path::PathBuf, rotate_bytes: u64) {
         let mut rx = self.tx.subscribe();
         tokio::spawn(async move {
             use tokio::io::AsyncWriteExt;
@@ -151,10 +146,7 @@ impl LogAggregator {
                             // Flush and drop the current writer before renaming.
                             drop(writer);
                             let _ = tokio::fs::rename(&path, &rotated).await;
-                            tracing::info!(
-                                "[{service}] rotated log → {}",
-                                rotated.display()
-                            );
+                            tracing::info!("[{service}] rotated log → {}", rotated.display());
                             match open_file(path.clone()).await {
                                 Ok(f) => {
                                     writer = tokio::io::BufWriter::new(f);

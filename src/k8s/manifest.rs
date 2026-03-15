@@ -1,15 +1,22 @@
-use crate::config::{ServiceDef, HealthConfig, HealthKind};
-use std::collections::HashMap;
+use crate::config::{HealthConfig, HealthKind, ServiceDef};
 use indexmap::IndexMap;
+use std::collections::HashMap;
 
 /// Generates Kubernetes manifests from ServiceDef.
 pub struct ManifestGenerator;
 
 impl ManifestGenerator {
     /// Generate a Deployment manifest for a service.
-    pub fn generate_deployment(name: &str, svc: &ServiceDef, namespace: &str, config_dir: &std::path::Path) -> String {
+    pub fn generate_deployment(
+        name: &str,
+        svc: &ServiceDef,
+        namespace: &str,
+        config_dir: &std::path::Path,
+    ) -> String {
         let k8s_config = svc.k8s.as_ref();
-        let image = k8s_config.map(|k| k.image.clone()).unwrap_or_else(|| "alpine:latest".to_string());
+        let image = k8s_config
+            .map(|k| k.image.clone())
+            .unwrap_or_else(|| "alpine:latest".to_string());
         let replicas = k8s_config.map(|k| k.replicas).unwrap_or(1);
 
         // Parse cmd into command and args
@@ -30,7 +37,8 @@ impl ManifestGenerator {
         // Generate volumes and volumeMounts
         let (volumes, volume_mounts) = Self::generate_volumes(k8s_config, config_dir);
 
-        format!(r#"apiVersion: apps/v1
+        format!(
+            r#"apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {name}
@@ -82,7 +90,8 @@ spec:
     pub fn generate_service(name: &str, svc: &ServiceDef, namespace: &str) -> String {
         let port = if svc.port > 0 { svc.port } else { 8080 };
 
-        format!(r#"apiVersion: v1
+        format!(
+            r#"apiVersion: v1
 kind: Service
 metadata:
   name: {name}
@@ -112,12 +121,15 @@ spec:
             return None;
         }
 
-        let data = svc.env.iter()
+        let data = svc
+            .env
+            .iter()
             .map(|(k, v)| format!("  {}: \"{}\"", k, v.replace("\"", "\\\"")))
             .collect::<Vec<_>>()
             .join("\n");
 
-        Some(format!(r#"apiVersion: v1
+        Some(format!(
+            r#"apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {name}-config
@@ -136,20 +148,29 @@ data:
 
     /// Generate a Secret from secret key-value pairs.
     /// Secrets are base64-encoded in the manifest.
-    pub fn generate_secret(name: &str, secrets: &HashMap<String, String>, namespace: &str) -> Option<String> {
+    pub fn generate_secret(
+        name: &str,
+        secrets: &HashMap<String, String>,
+        namespace: &str,
+    ) -> Option<String> {
         if secrets.is_empty() {
             return None;
         }
 
-        let data = secrets.iter()
+        let data = secrets
+            .iter()
             .map(|(k, v)| {
-                let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, v.as_bytes());
+                let encoded = base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    v.as_bytes(),
+                );
                 format!("  {}: {}", k, encoded)
             })
             .collect::<Vec<_>>()
             .join("\n");
 
-        Some(format!(r#"apiVersion: v1
+        Some(format!(
+            r#"apiVersion: v1
 kind: Secret
 metadata:
   name: {name}-secret
@@ -168,12 +189,17 @@ data:
     }
 
     /// Generate an Ingress manifest for services with subdomains.
-    pub fn generate_ingress(services: &IndexMap<String, ServiceDef>, namespace: &str) -> Option<String> {
-        let rules: Vec<String> = services.iter()
+    pub fn generate_ingress(
+        services: &IndexMap<String, ServiceDef>,
+        namespace: &str,
+    ) -> Option<String> {
+        let rules: Vec<String> = services
+            .iter()
             .filter_map(|(name, svc)| {
                 svc.subdomain.as_ref().map(|subdomain| {
                     let port = if svc.port > 0 { svc.port } else { 8080 };
-                    format!(r#"  - host: {subdomain}.localhost
+                    format!(
+                        r#"  - host: {subdomain}.localhost
     http:
       paths:
       - path: /
@@ -195,7 +221,8 @@ data:
             return None;
         }
 
-        Some(format!(r#"apiVersion: networking.k8s.io/v1
+        Some(format!(
+            r#"apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: a3s-ingress
@@ -221,7 +248,8 @@ spec:
 
         let command = format!("command: [\"{}\"]\n        ", parts[0]);
         let args = if parts.len() > 1 {
-            let args_list = parts[1..].iter()
+            let args_list = parts[1..]
+                .iter()
                 .map(|a| format!("\"{}\"", a))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -235,7 +263,9 @@ spec:
 
     fn generate_env_vars(name: &str, svc: &ServiceDef) -> String {
         let has_configmap = !svc.env.is_empty();
-        let has_secret = svc.k8s.as_ref()
+        let has_secret = svc
+            .k8s
+            .as_ref()
             .map(|k| k.secret_file.is_some() || !k.secrets.is_empty())
             .unwrap_or(false);
 
@@ -246,11 +276,17 @@ spec:
         let mut result = String::from("envFrom:\n");
 
         if has_configmap {
-            result.push_str(&format!("        - configMapRef:\n            name: {}-config\n", name));
+            result.push_str(&format!(
+                "        - configMapRef:\n            name: {}-config\n",
+                name
+            ));
         }
 
         if has_secret {
-            result.push_str(&format!("        - secretRef:\n            name: {}-secret\n", name));
+            result.push_str(&format!(
+                "        - secretRef:\n            name: {}-secret\n",
+                name
+            ));
         }
 
         result.push_str("        ");
@@ -270,7 +306,8 @@ spec:
         match health.kind {
             HealthKind::Http => {
                 let path = health.path.as_deref().unwrap_or("/health");
-                format!(r#"livenessProbe:
+                format!(
+                    r#"livenessProbe:
           httpGet:
             path: {path}
             port: {port}
@@ -295,7 +332,8 @@ spec:
                 )
             }
             HealthKind::Tcp => {
-                format!(r#"livenessProbe:
+                format!(
+                    r#"livenessProbe:
           tcpSocket:
             port: {port}
           initialDelaySeconds: 10
@@ -362,18 +400,26 @@ spec:
             return "".to_string();
         }
 
-        let containers = depends_on.iter()
-            .map(|dep| format!(r#"      - name: wait-for-{dep}
+        let containers = depends_on
+            .iter()
+            .map(|dep| {
+                format!(
+                    r#"      - name: wait-for-{dep}
         image: busybox:1.36
         command: ['sh', '-c', 'until nslookup {dep}; do echo waiting for {dep}; sleep 2; done']"#,
-                dep = dep))
+                    dep = dep
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
         format!("\n      initContainers:\n{}\n", containers)
     }
 
-    fn generate_volumes(k8s_config: Option<&crate::config::K8sConfig>, config_dir: &std::path::Path) -> (String, String) {
+    fn generate_volumes(
+        k8s_config: Option<&crate::config::K8sConfig>,
+        config_dir: &std::path::Path,
+    ) -> (String, String) {
         let Some(k8s_cfg) = k8s_config else {
             return ("".to_string(), "".to_string());
         };
@@ -383,10 +429,19 @@ spec:
         }
 
         // Generate volumeMounts for container
-        let mounts = k8s_cfg.volumes.iter()
+        let mounts = k8s_cfg
+            .volumes
+            .iter()
             .map(|v| {
-                let read_only = if v.read_only { "\n          readOnly: true" } else { "" };
-                format!("        - name: {}\n          mountPath: {}{}", v.name, v.mount_path, read_only)
+                let read_only = if v.read_only {
+                    "\n          readOnly: true"
+                } else {
+                    ""
+                };
+                format!(
+                    "        - name: {}\n          mountPath: {}{}",
+                    v.name, v.mount_path, read_only
+                )
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -445,7 +500,7 @@ spec:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ServiceDef, K8sConfig, K8sVolume, HealthConfig, HealthKind};
+    use crate::config::{HealthConfig, HealthKind, K8sConfig, K8sVolume, ServiceDef};
     use std::collections::HashMap;
 
     fn test_service() -> ServiceDef {
@@ -559,17 +614,15 @@ mod tests {
     fn test_generate_volumes_hostpath() {
         let mut svc = test_service();
         if let Some(ref mut k8s) = svc.k8s {
-            k8s.volumes = vec![
-                K8sVolume {
-                    name: "code".to_string(),
-                    volume_type: "hostPath".to_string(),
-                    mount_path: "/app/src".to_string(),
-                    host_path: Some(std::path::PathBuf::from("./src")),
-                    config_map: None,
-                    secret: None,
-                    read_only: false,
-                }
-            ];
+            k8s.volumes = vec![K8sVolume {
+                name: "code".to_string(),
+                volume_type: "hostPath".to_string(),
+                mount_path: "/app/src".to_string(),
+                host_path: Some(std::path::PathBuf::from("./src")),
+                config_map: None,
+                secret: None,
+                read_only: false,
+            }];
         }
 
         let config_dir = std::path::Path::new("/tmp");
@@ -589,17 +642,15 @@ mod tests {
     fn test_generate_volumes_emptydir() {
         let mut svc = test_service();
         if let Some(ref mut k8s) = svc.k8s {
-            k8s.volumes = vec![
-                K8sVolume {
-                    name: "cache".to_string(),
-                    volume_type: "emptyDir".to_string(),
-                    mount_path: "/cache".to_string(),
-                    host_path: None,
-                    config_map: None,
-                    secret: None,
-                    read_only: false,
-                }
-            ];
+            k8s.volumes = vec![K8sVolume {
+                name: "cache".to_string(),
+                volume_type: "emptyDir".to_string(),
+                mount_path: "/cache".to_string(),
+                host_path: None,
+                config_map: None,
+                secret: None,
+                read_only: false,
+            }];
         }
 
         let config_dir = std::path::Path::new("/tmp");
