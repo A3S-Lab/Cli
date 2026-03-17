@@ -12,6 +12,7 @@ impl ManifestGenerator {
         svc: &ServiceDef,
         namespace: &str,
         config_dir: &std::path::Path,
+        service_ports: &HashMap<String, u16>,
     ) -> String {
         let k8s_config = svc.k8s.as_ref();
         let image = k8s_config
@@ -32,7 +33,7 @@ impl ManifestGenerator {
         let resources = Self::generate_resources(k8s_config.and_then(|k| k.resources.as_ref()));
 
         // Generate init containers for dependencies
-        let init_containers = Self::generate_init_containers(&svc.depends_on);
+        let init_containers = Self::generate_init_containers(&svc.depends_on, service_ports);
 
         // Generate volumes and volumeMounts
         let (volumes, volume_mounts) = Self::generate_volumes(k8s_config, config_dir);
@@ -364,16 +365,16 @@ spec:
         let mut limits = vec![];
 
         if let Some(ref cpu) = res.cpu_request {
-            requests.push(format!("          cpu: {}", cpu));
+            requests.push(format!("            cpu: {}", cpu));
         }
         if let Some(ref mem) = res.memory_request {
-            requests.push(format!("          memory: {}", mem));
+            requests.push(format!("            memory: {}", mem));
         }
         if let Some(ref cpu) = res.cpu_limit {
-            limits.push(format!("          cpu: {}", cpu));
+            limits.push(format!("            cpu: {}", cpu));
         }
         if let Some(ref mem) = res.memory_limit {
-            limits.push(format!("          memory: {}", mem));
+            limits.push(format!("            memory: {}", mem));
         }
 
         if requests.is_empty() && limits.is_empty() {
@@ -382,12 +383,12 @@ spec:
 
         let mut result = String::from("resources:\n");
         if !requests.is_empty() {
-            result.push_str("        requests:\n");
+            result.push_str("          requests:\n");
             result.push_str(&requests.join("\n"));
             result.push('\n');
         }
         if !limits.is_empty() {
-            result.push_str("        limits:\n");
+            result.push_str("          limits:\n");
             result.push_str(&limits.join("\n"));
             result.push('\n');
         }
@@ -395,7 +396,10 @@ spec:
         result
     }
 
-    fn generate_init_containers(depends_on: &[String]) -> String {
+    fn generate_init_containers(
+        depends_on: &[String],
+        service_ports: &HashMap<String, u16>,
+    ) -> String {
         if depends_on.is_empty() {
             return "".to_string();
         }
@@ -403,11 +407,13 @@ spec:
         let containers = depends_on
             .iter()
             .map(|dep| {
+                let port = service_ports.get(dep).copied().unwrap_or(80);
                 format!(
                     r#"      - name: wait-for-{dep}
         image: busybox:1.36
-        command: ['sh', '-c', 'until nslookup {dep}; do echo waiting for {dep}; sleep 2; done']"#,
-                    dep = dep
+        command: ['sh', '-c', 'until nc -z {dep} {port}; do echo waiting for {dep}; sleep 2; done']"#,
+                    dep = dep,
+                    port = port
                 )
             })
             .collect::<Vec<_>>()
@@ -546,7 +552,13 @@ mod tests {
     fn test_generate_deployment() {
         let svc = test_service();
         let config_dir = std::path::Path::new("/tmp");
-        let manifest = ManifestGenerator::generate_deployment("api", &svc, "default", config_dir);
+        let manifest = ManifestGenerator::generate_deployment(
+            "api",
+            &svc,
+            "default",
+            config_dir,
+            &HashMap::new(),
+        );
 
         assert!(manifest.contains("kind: Deployment"));
         assert!(manifest.contains("name: api"));
@@ -626,7 +638,13 @@ mod tests {
         }
 
         let config_dir = std::path::Path::new("/tmp");
-        let manifest = ManifestGenerator::generate_deployment("api", &svc, "default", config_dir);
+        let manifest = ManifestGenerator::generate_deployment(
+            "api",
+            &svc,
+            "default",
+            config_dir,
+            &HashMap::new(),
+        );
 
         assert!(manifest.contains("volumeMounts:"));
         assert!(manifest.contains("- name: code"));
@@ -654,7 +672,13 @@ mod tests {
         }
 
         let config_dir = std::path::Path::new("/tmp");
-        let manifest = ManifestGenerator::generate_deployment("api", &svc, "default", config_dir);
+        let manifest = ManifestGenerator::generate_deployment(
+            "api",
+            &svc,
+            "default",
+            config_dir,
+            &HashMap::new(),
+        );
 
         assert!(manifest.contains("- name: cache"));
         assert!(manifest.contains("mountPath: /cache"));
@@ -700,7 +724,13 @@ mod tests {
         });
 
         let config_dir = std::path::Path::new("/tmp");
-        let manifest = ManifestGenerator::generate_deployment("api", &svc, "default", config_dir);
+        let manifest = ManifestGenerator::generate_deployment(
+            "api",
+            &svc,
+            "default",
+            config_dir,
+            &HashMap::new(),
+        );
 
         assert!(manifest.contains("livenessProbe:"));
         assert!(manifest.contains("readinessProbe:"));
@@ -717,13 +747,23 @@ mod tests {
         let mut svc = test_service();
         svc.depends_on = vec!["db".to_string(), "redis".to_string()];
 
+        let mut service_ports = HashMap::new();
+        service_ports.insert("db".to_string(), 5432u16);
+        service_ports.insert("redis".to_string(), 6379u16);
+
         let config_dir = std::path::Path::new("/tmp");
-        let manifest = ManifestGenerator::generate_deployment("api", &svc, "default", config_dir);
+        let manifest = ManifestGenerator::generate_deployment(
+            "api",
+            &svc,
+            "default",
+            config_dir,
+            &service_ports,
+        );
 
         assert!(manifest.contains("initContainers:"));
         assert!(manifest.contains("wait-for-db"));
         assert!(manifest.contains("wait-for-redis"));
-        assert!(manifest.contains("nslookup db"));
-        assert!(manifest.contains("nslookup redis"));
+        assert!(manifest.contains("nc -z db 5432"));
+        assert!(manifest.contains("nc -z redis 6379"));
     }
 }

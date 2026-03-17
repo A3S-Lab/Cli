@@ -1858,6 +1858,13 @@ async fn run_k8s_mode(
 
     println!("{} deploying {} services", "→".cyan(), deploy_order.len());
 
+    // Build port map once so initContainers use the correct port for each dependency.
+    let service_ports: std::collections::HashMap<String, u16> = cfg
+        .service
+        .iter()
+        .map(|(name, svc)| (name.clone(), svc.port))
+        .collect();
+
     // Deploy services in dependency order
     for svc_name in &deploy_order {
         let svc = cfg
@@ -1867,7 +1874,7 @@ async fn run_k8s_mode(
 
         println!("{} {} deploying...", "→".cyan(), svc_name);
         k8s_runtime
-            .start_service(svc_name, svc, &config_dir)
+            .start_service(svc_name, svc, &config_dir, &service_ports)
             .await?;
         println!("{} {} running", "✓".green(), svc_name);
     }

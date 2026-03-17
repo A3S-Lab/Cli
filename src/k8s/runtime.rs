@@ -76,6 +76,7 @@ impl K8sRuntime {
         name: &str,
         svc: &ServiceDef,
         config_dir: &std::path::Path,
+        service_ports: &std::collections::HashMap<String, u16>,
     ) -> Result<()> {
         tracing::info!("[{}] deploying to kubernetes", name);
 
@@ -155,7 +156,8 @@ impl K8sRuntime {
             manifests.push(configmap);
         }
 
-        let deployment = ManifestGenerator::generate_deployment(name, svc, namespace, config_dir);
+        let deployment =
+            ManifestGenerator::generate_deployment(name, svc, namespace, config_dir, service_ports);
         self.client.apply_manifest(&deployment).await?;
         manifests.push(deployment);
 

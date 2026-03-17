@@ -118,6 +118,7 @@ service "db" {
 | `a3s restart <service>` | Restart a service |
 | `a3s reload` | Reload A3sfile.hcl without restarting unchanged services |
 | `a3s status` / `a3s ps` | Show service status table |
+| `a3s status --watch [--interval N]` | Continuously refresh status table (default: 2s) |
 | `a3s status --json` | Machine-readable JSON status |
 | `a3s logs [--service name]` | Tail logs (all or one service, repeatable) |
 | `a3s logs --grep <keyword>` | Filter log output by keyword |
@@ -378,6 +379,9 @@ just fmt
 - [x] **k8s Volume mounts** — set `volumes = [{ name, type, mount_path, ... }]` in the `k8s {}` block to mount volumes into containers; supports `hostPath` (local directories for hot-reload), `emptyDir` (temporary storage), `configMap`, and `secret`; hostPath paths are relative to A3sfile.hcl directory and automatically resolved to absolute paths
 - [x] **k8s `a3s port-forward`** — forward local port to a service in the k8s cluster via `a3s port-forward <service> <local-port>:<remote-port>`; wraps `kubectl port-forward deployment/<name>`; runs in foreground until Ctrl+C; k8s mode only
 - [x] **HTTPS support** — set `https = true` in the `dev {}` block to enable HTTPS for the reverse proxy; automatically generates self-signed certificate (stored in `.a3s/cert.pem` and `.a3s/key.pem`); access services via `https://api.localhost:7080` instead of `http://`; certificate includes `*.localhost` SAN for all subdomains
+- [x] **Web UI Box tab** — container, image, network, and volume management for `a3s-box`; sub-tabs for containers (with show-all toggle, stop/rm actions), images (rmi), networks (rm), volumes (rm), and info; backend API fully wired to `a3s-box` CLI
+- [x] **`a3s status --watch`** — continuously refresh the status table in-place (like `top`); configurable with `--interval N` (default 2s); press Ctrl+C to exit; mutually exclusive with `--json`
+- [x] **k8s initContainers use actual service ports** — `depends_on` wait containers now read the target service's configured `port` instead of a hardcoded name-based lookup
 
 ## License
 
