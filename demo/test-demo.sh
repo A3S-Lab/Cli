@@ -1,36 +1,17 @@
 #!/usr/bin/env bash
-# test-demo.sh — integration test for `a3s up` with the demo services.
+# test-demo.sh — build, start, and integration-test the a3s demo stack.
 #
 # Usage:
-#   cd demo/
-#   bash test-demo.sh [--binary /path/to/a3s]
+#   ./demo/test-demo.sh            # build debug + run all tests
+#   ./demo/test-demo.sh --release  # build release binary
 #
-# The a3s binary is resolved in this order:
-#   1. --binary <path> argument
-#   2. A3S_BIN env var
-#   3. ../target/release/a3s  (cargo build --release)
-#   4. ../target/debug/a3s    (cargo build)
-#   5. a3s on PATH
-#
-# Prerequisites: python3, a3s-gateway on PATH
+# Prerequisites: cargo, python3, a3s-gateway on PATH
 set -euo pipefail
 
-# ── config ─────────────────────────────────────────────────────────────────
+# ── paths ──────────────────────────────────────────────────────────────────
 FILE="$(cd "$(dirname "$0")" && pwd)/A3sfile.hcl"
 DIR="$(dirname "$FILE")"
 CRATE_DIR="$(dirname "$DIR")"
-
-# Resolve a3s binary (overridden by --binary or A3S_BIN below)
-_resolve_a3s() {
-    if [ -n "${A3S_BIN:-}" ]; then echo "$A3S_BIN"; return; fi
-    for candidate in \
-        "$CRATE_DIR/target/release/a3s" \
-        "$CRATE_DIR/target/debug/a3s"; do
-        if [ -x "$candidate" ]; then echo "$candidate"; return; fi
-    done
-    echo "a3s"  # fall back to PATH
-}
-A3S="$(_resolve_a3s)"
 
 STORE_PORT=6380
 API_PORT=8001
@@ -41,6 +22,7 @@ GW_PORT=8080
 STORE_KEY="demo-store-secret"
 
 PASS=0; FAIL=0
+RELEASE=0
 
 # ── helpers ────────────────────────────────────────────────────────────────
 green()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -61,7 +43,6 @@ assert_empty() {
     if [ -z "$val" ]; then ok "$desc"; else fail "$desc (expected empty, got: $val)"; fi
 }
 
-# curl wrapper: returns body on success, empty on error
 _curl() { curl -sf --max-time 3 "$@" 2>/dev/null || true; }
 
 wait_http() {
@@ -78,12 +59,11 @@ cleanup() {
     "$A3S" -f "$FILE" down 2>/dev/null || true
     rm -rf "$DIR/logs"
 }
-trap cleanup EXIT
 
 # ── parse args ─────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --binary) A3S="$2"; shift 2 ;;
+        --release) RELEASE=1; shift ;;
         *) echo "unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -94,20 +74,26 @@ yellow "  a3s demo integration test"
 yellow "═══════════════════════════════════════════════════"
 echo ""
 
-# ── 0. prerequisites ───────────────────────────────────────────────────────
-info "checking prerequisites"
-command -v python3 >/dev/null || { fail "python3 not found"; exit 1; }
+# ── 0. build ───────────────────────────────────────────────────────────────
+yellow "── 0. build ─────────────────────────────────────────"
+command -v cargo    >/dev/null || { red "cargo not found — install Rust"; exit 1; }
+command -v python3  >/dev/null || { red "python3 not found";              exit 1; }
+command -v a3s-gateway >/dev/null || { red "a3s-gateway not found on PATH"; exit 1; }
 
-# A3S may be an absolute path (from cargo target/) or a name on PATH
-if [ -x "$A3S" ] || command -v "$A3S" >/dev/null 2>&1; then
-    ok "a3s found: $A3S"
+if [ "$RELEASE" -eq 1 ]; then
+    info "cargo build --release"
+    cargo build --release --manifest-path "$CRATE_DIR/Cargo.toml" 2>&1 \
+        | sed 's/^/    /'
+    A3S="$CRATE_DIR/target/release/a3s"
 else
-    fail "a3s binary not found — run 'cargo build' first, or set A3S_BIN"
-    exit 1
+    info "cargo build"
+    cargo build --manifest-path "$CRATE_DIR/Cargo.toml" 2>&1 \
+        | sed 's/^/    /'
+    A3S="$CRATE_DIR/target/debug/a3s"
 fi
+ok "built: $A3S"
 
-command -v a3s-gateway >/dev/null || { fail "a3s-gateway not found on PATH"; exit 1; }
-ok "python3, a3s-gateway found"
+trap cleanup EXIT
 
 mkdir -p "$DIR/logs"
 
