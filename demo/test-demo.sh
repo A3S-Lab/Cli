@@ -5,13 +5,32 @@
 #   cd demo/
 #   bash test-demo.sh [--binary /path/to/a3s]
 #
-# Prerequisites: python3, a3s binary on PATH (or --binary), a3s-gateway on PATH
+# The a3s binary is resolved in this order:
+#   1. --binary <path> argument
+#   2. A3S_BIN env var
+#   3. ../target/release/a3s  (cargo build --release)
+#   4. ../target/debug/a3s    (cargo build)
+#   5. a3s on PATH
+#
+# Prerequisites: python3, a3s-gateway on PATH
 set -euo pipefail
 
 # ── config ─────────────────────────────────────────────────────────────────
-A3S="${A3S_BIN:-a3s}"
 FILE="$(cd "$(dirname "$0")" && pwd)/A3sfile.hcl"
 DIR="$(dirname "$FILE")"
+CRATE_DIR="$(dirname "$DIR")"
+
+# Resolve a3s binary (overridden by --binary or A3S_BIN below)
+_resolve_a3s() {
+    if [ -n "${A3S_BIN:-}" ]; then echo "$A3S_BIN"; return; fi
+    for candidate in \
+        "$CRATE_DIR/target/release/a3s" \
+        "$CRATE_DIR/target/debug/a3s"; do
+        if [ -x "$candidate" ]; then echo "$candidate"; return; fi
+    done
+    echo "a3s"  # fall back to PATH
+}
+A3S="$(_resolve_a3s)"
 
 STORE_PORT=6380
 API_PORT=8001
@@ -77,10 +96,18 @@ echo ""
 
 # ── 0. prerequisites ───────────────────────────────────────────────────────
 info "checking prerequisites"
-command -v python3       >/dev/null || { fail "python3 not found";       exit 1; }
-command -v "$A3S"        >/dev/null || { fail "a3s not found (A3S_BIN or --binary)"; exit 1; }
-command -v a3s-gateway   >/dev/null || { fail "a3s-gateway not found on PATH"; exit 1; }
-ok "python3, a3s, a3s-gateway found"
+command -v python3 >/dev/null || { fail "python3 not found"; exit 1; }
+
+# A3S may be an absolute path (from cargo target/) or a name on PATH
+if [ -x "$A3S" ] || command -v "$A3S" >/dev/null 2>&1; then
+    ok "a3s found: $A3S"
+else
+    fail "a3s binary not found — run 'cargo build' first, or set A3S_BIN"
+    exit 1
+fi
+
+command -v a3s-gateway >/dev/null || { fail "a3s-gateway not found on PATH"; exit 1; }
+ok "python3, a3s-gateway found"
 
 mkdir -p "$DIR/logs"
 
