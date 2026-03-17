@@ -76,22 +76,41 @@ echo ""
 
 # ── 0. build ───────────────────────────────────────────────────────────────
 yellow "── 0. build ─────────────────────────────────────────"
-command -v cargo    >/dev/null || { red "cargo not found — install Rust"; exit 1; }
-command -v python3  >/dev/null || { red "python3 not found";              exit 1; }
-command -v a3s-gateway >/dev/null || { red "a3s-gateway not found on PATH"; exit 1; }
+command -v cargo   >/dev/null || { red "cargo not found — install Rust"; exit 1; }
+command -v python3 >/dev/null || { red "python3 not found";              exit 1; }
+
+GATEWAY_CRATE="$(dirname "$CRATE_DIR")/gateway"
 
 if [ "$RELEASE" -eq 1 ]; then
-    info "cargo build --release"
-    cargo build --release --manifest-path "$CRATE_DIR/Cargo.toml" 2>&1 \
-        | sed 's/^/    /'
-    A3S="$CRATE_DIR/target/release/a3s"
+    BUILD_FLAGS="--release"
+    BUILD_DIR="release"
 else
-    info "cargo build"
-    cargo build --manifest-path "$CRATE_DIR/Cargo.toml" 2>&1 \
-        | sed 's/^/    /'
-    A3S="$CRATE_DIR/target/debug/a3s"
+    BUILD_FLAGS=""
+    BUILD_DIR="debug"
 fi
+
+info "cargo build a3s (cli)"
+cargo build $BUILD_FLAGS --manifest-path "$CRATE_DIR/Cargo.toml" 2>&1 \
+    | sed 's/^/    /'
+A3S="$CRATE_DIR/target/$BUILD_DIR/a3s"
 ok "built: $A3S"
+
+# Build a3s-gateway if not already on PATH, using the gateway submodule
+if ! command -v a3s-gateway >/dev/null 2>&1; then
+    if [ -f "$GATEWAY_CRATE/Cargo.toml" ]; then
+        info "cargo build a3s-gateway (gateway submodule)"
+        cargo build $BUILD_FLAGS --manifest-path "$GATEWAY_CRATE/Cargo.toml" 2>&1 \
+            | sed 's/^/    /'
+        export PATH="$GATEWAY_CRATE/target/$BUILD_DIR:$PATH"
+        ok "built: $GATEWAY_CRATE/target/$BUILD_DIR/a3s-gateway"
+    else
+        red "a3s-gateway not found on PATH and gateway submodule missing at $GATEWAY_CRATE"
+        red "run: git submodule update --init crates/gateway"
+        exit 1
+    fi
+else
+    ok "a3s-gateway: $(command -v a3s-gateway)"
+fi
 
 trap cleanup EXIT
 
