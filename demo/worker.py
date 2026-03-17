@@ -18,6 +18,7 @@ import datetime, http.server, json, os, threading, time, urllib.request
 
 STORE_URL = os.environ.get("STORE_URL", "http://localhost:6380")
 INTERVAL  = int(os.environ.get("INTERVAL", 5))
+APP_ENV   = os.environ.get("APP_ENV", "development")
 
 _state = {"beats": 0, "last_beat": None}
 _lock  = threading.Lock()
@@ -62,6 +63,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "last_beat": _state["last_beat"],
                     "interval":  INTERVAL,
                     "store_url": STORE_URL,
+                    "app_env":   APP_ENV,
                 })
         else:
             self._json(404, {"error": "not found"})
@@ -73,5 +75,5 @@ class Handler(http.server.BaseHTTPRequestHandler):
 threading.Thread(target=_beat_loop, daemon=True).start()
 
 port = int(os.environ.get("PORT", 8002))
-print(f"[worker] listening on :{port}  store={STORE_URL}  interval={INTERVAL}s", flush=True)
+print(f"[worker] listening on :{port}  store={STORE_URL}  interval={INTERVAL}s  env={APP_ENV}", flush=True)
 http.server.HTTPServer(("", port), Handler).serve_forever()

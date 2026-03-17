@@ -274,9 +274,92 @@ assert_contains "store still running" "$store_still" '"ok"'
 "$A3S" -f "$FILE" up --detach --no-ui api worker
 sleep 3
 
-# ── 11. full down + port checks ───────────────────────────────────────────
+# ── 11. env() function — default values ──────────────────────────────────
+#
+# A3sfile.hcl uses:
+#   log_level  = env("LOG_LEVEL",       "info")
+#   INTERVAL   = env("WORKER_INTERVAL", "3")
+#   APP_ENV    = env("APP_ENV",         "development")
+#   STORE_API_KEY = env("STORE_API_KEY","demo-store-secret")
+#
+# With none of those OS env vars set the services must use the defaults.
 echo ""
-yellow "── 11. a3s down (all) ───────────────────────────────"
+yellow "── 11. env() defaults (no OS env vars set) ──────────"
+
+w_status=$(_curl "http://localhost:$WORKER_PORT/status")
+
+w_interval=$(echo "$w_status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('interval',''))")
+if [ "$w_interval" = "3" ]; then
+    ok "env(WORKER_INTERVAL) default=3"
+else
+    fail "env(WORKER_INTERVAL) expected default 3, got '$w_interval'"
+fi
+
+w_appenv=$(echo "$w_status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('app_env',''))")
+if [ "$w_appenv" = "development" ]; then
+    ok "env(APP_ENV) default=development"
+else
+    fail "env(APP_ENV) expected default 'development', got '$w_appenv'"
+fi
+
+# STORE_API_KEY default: the gateway should still accept the default key
+store_gw=$(_curl -H "X-Store-Key: $STORE_KEY" "$gw/store/health")
+assert_contains "env(STORE_API_KEY) default key accepted by gateway" "$store_gw" '"ok"'
+
+# ── 12. env() function — OS env var overrides ─────────────────────────────
+echo ""
+yellow "── 12. env() overrides (OS env vars set) ────────────"
+
+# Stop everything, then restart with overriding env vars.
+"$A3S" -f "$FILE" down
+sleep 2
+
+CUSTOM_KEY="my-custom-store-key"
+
+info "restarting with WORKER_INTERVAL=2 APP_ENV=staging STORE_API_KEY=$CUSTOM_KEY"
+WORKER_INTERVAL=2 APP_ENV=staging STORE_API_KEY="$CUSTOM_KEY" \
+    "$A3S" -f "$FILE" up --detach --no-ui
+
+wait_http "http://localhost:$WORKER_PORT/health" "worker (override run)"
+
+w_status2=$(_curl "http://localhost:$WORKER_PORT/status")
+
+w_interval2=$(echo "$w_status2" | python3 -c "import json,sys; print(json.load(sys.stdin).get('interval',''))")
+if [ "$w_interval2" = "2" ]; then
+    ok "env(WORKER_INTERVAL) override=2"
+else
+    fail "env(WORKER_INTERVAL) expected override 2, got '$w_interval2'"
+fi
+
+w_appenv2=$(echo "$w_status2" | python3 -c "import json,sys; print(json.load(sys.stdin).get('app_env',''))")
+if [ "$w_appenv2" = "staging" ]; then
+    ok "env(APP_ENV) override=staging"
+else
+    fail "env(APP_ENV) expected override 'staging', got '$w_appenv2'"
+fi
+
+# Verify the custom STORE_API_KEY is active in gateway
+wait_http "$gw/api/gateway/health" "gateway (override run)"
+
+# old default key must now be rejected
+old_key_resp=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+    -H "X-Store-Key: $STORE_KEY" "$gw/store/health" 2>/dev/null || true)
+if [ "$old_key_resp" = "401" ] || [ "$old_key_resp" = "403" ]; then
+    ok "env(STORE_API_KEY) old default key rejected after override ($old_key_resp)"
+else
+    fail "env(STORE_API_KEY) old default key should be rejected (got $old_key_resp)"
+fi
+
+# new custom key must be accepted
+new_key_resp=$(_curl -H "X-Store-Key: $CUSTOM_KEY" "$gw/store/health")
+assert_contains "env(STORE_API_KEY) new custom key accepted" "$new_key_resp" '"ok"'
+
+# restore STORE_KEY for cleanup helpers
+STORE_KEY="$CUSTOM_KEY"
+
+# ── 13. full down + port checks ───────────────────────────────────────────
+echo ""
+yellow "── 13. a3s down (all) ───────────────────────────────"
 "$A3S" -f "$FILE" down
 sleep 2
 

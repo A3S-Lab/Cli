@@ -115,9 +115,11 @@ middlewares "cors" {
   allowed_methods = ["GET", "POST", "DELETE", "OPTIONS"]
 }
 
-# API-key protection for the store route (internal use only)
+# API-key protection for the store route (internal use only).
+# The key value comes from the STORE_API_KEY OS env var injected by
+# A3sfile.hcl: env("STORE_API_KEY", "demo-store-secret")
 middlewares "store-api-key" {
   type   = "api-key"
   header = "X-Store-Key"
-  keys   = ["demo-store-secret"]
+  keys   = ["${STORE_API_KEY}"]
 }

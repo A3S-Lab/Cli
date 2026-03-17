@@ -1,6 +1,7 @@
 dev {
   proxy_port = 7080
-  log_level  = "info"
+  # env("LOG_LEVEL", "info") — override with LOG_LEVEL=debug a3s up
+  log_level  = env("LOG_LEVEL", "info")
 }
 
 # ── store: in-memory key-value HTTP service ────────────────────────────────
@@ -8,6 +9,10 @@ service "store" {
   cmd    = "python3 store.py"
   port   = 6380
   labels = ["infra"]
+
+  env = {
+    APP_ENV = env("APP_ENV", "development")
+  }
 
   health {
     type     = "http"
@@ -35,6 +40,7 @@ service "api" {
 
   env = {
     STORE_URL = "http://localhost:${store.port}"
+    APP_ENV   = env("APP_ENV", "development")
   }
 
   health {
@@ -63,7 +69,9 @@ service "worker" {
 
   env = {
     STORE_URL = "http://localhost:${store.port}"
-    INTERVAL  = "3"
+    # env("WORKER_INTERVAL", "3") — override with WORKER_INTERVAL=<n> a3s up
+    INTERVAL  = env("WORKER_INTERVAL", "3")
+    APP_ENV   = env("APP_ENV", "development")
   }
 
   health {
@@ -92,6 +100,7 @@ service "web" {
 
   env = {
     API_URL = "http://localhost:${api.port}"
+    APP_ENV = env("APP_ENV", "development")
   }
 
   health {
@@ -119,6 +128,13 @@ service "gateway" {
   port       = 8080
   depends_on = ["store", "api", "worker", "web"]
   labels     = ["infra"]
+
+  env = {
+    # Passed to a3s-gateway as an OS env var so gateway.hcl can reference
+    # it via ${STORE_API_KEY}.  Override with STORE_API_KEY=<secret> a3s up
+    STORE_API_KEY = env("STORE_API_KEY", "demo-store-secret")
+    APP_ENV       = env("APP_ENV", "development")
+  }
 
   health {
     type     = "http"
