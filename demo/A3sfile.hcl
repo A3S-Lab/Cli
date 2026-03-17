@@ -83,7 +83,7 @@ service "worker" {
   log_file = "logs/worker.log"
 }
 
-# ── web: HTML frontend, depends on api ────────────────────────────────────
+# ── web: HTML frontend, depends on api ─────────────────────────────────────
 service "web" {
   cmd        = "python3 web.py"
   port       = 3000
@@ -105,7 +105,39 @@ service "web" {
   log_file = "logs/web.log"
 }
 
-# ── env_override example: switch to alternate ports for CI ────────────────
+# ── gateway: unified reverse proxy, depends on all backends ────────────────
+#
+# Exposes a single entrypoint on :8080:
+#   /          → web  (HTML frontend)
+#   /api/…     → api  (REST, strip prefix, rate-limited)
+#   /worker/…  → worker (status, strip prefix)
+#   /store/…   → store  (KV, strip prefix, api-key required)
+#
+# Routes are defined in gateway.hcl alongside this file.
+service "gateway" {
+  cmd        = "a3s-gateway --config gateway.hcl"
+  port       = 8080
+  depends_on = ["store", "api", "worker", "web"]
+  labels     = ["infra"]
+
+  health {
+    type     = "http"
+    path     = "/api/gateway/health"
+    interval = "3s"
+    timeout  = "2s"
+    retries  = 5
+  }
+
+  restart {
+    max_restarts = 3
+    backoff      = "2s"
+    max_backoff  = "15s"
+  }
+
+  log_file = "logs/gateway.log"
+}
+
+# ── env_override: switch to alternate ports for CI ────────────────────────
 env_override "ci" {
   service "store"  { env = { PORT = "16380" } }
   service "api"    { env = { PORT = "18001" } }

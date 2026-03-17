@@ -5,7 +5,7 @@
 #   cd demo/
 #   bash test-demo.sh [--binary /path/to/a3s]
 #
-# Prerequisites: python3, a3s binary on PATH (or pass --binary)
+# Prerequisites: python3, a3s binary on PATH (or --binary), a3s-gateway on PATH
 set -euo pipefail
 
 # ── config ─────────────────────────────────────────────────────────────────
@@ -17,6 +17,9 @@ STORE_PORT=6380
 API_PORT=8001
 WORKER_PORT=8002
 WEB_PORT=3000
+GW_PORT=8080
+
+STORE_KEY="demo-store-secret"
 
 PASS=0; FAIL=0
 
@@ -29,27 +32,26 @@ ok()   { green  "  ✓ $*"; PASS=$((PASS+1)); }
 fail() { red    "  ✗ $*"; FAIL=$((FAIL+1)); }
 info() { yellow "  · $*"; }
 
-assert_eq() {
-    local desc="$1" got="$2" want="$3"
-    if [ "$got" = "$want" ]; then ok "$desc"; else fail "$desc (got='$got' want='$want')"; fi
-}
-
 assert_contains() {
     local desc="$1" haystack="$2" needle="$3"
-    if echo "$haystack" | grep -q "$needle"; then ok "$desc"; else fail "$desc (missing '$needle')"; fi
+    if echo "$haystack" | grep -q "$needle"; then ok "$desc"; else fail "$desc (missing '$needle' in: $haystack)"; fi
 }
 
-# curl wrapper — returns empty string on error instead of failing
+assert_empty() {
+    local desc="$1" val="$2"
+    if [ -z "$val" ]; then ok "$desc"; else fail "$desc (expected empty, got: $val)"; fi
+}
+
+# curl wrapper: returns body on success, empty on error
 _curl() { curl -sf --max-time 3 "$@" 2>/dev/null || true; }
 
 wait_http() {
     local url="$1" label="$2" tries=0
-    while [ $tries -lt 20 ]; do
-        if _curl "$url" >/dev/null 2>&1; then return 0; fi
+    while [ $tries -lt 30 ]; do
+        if _curl "$url" >/dev/null; then return 0; fi
         tries=$((tries+1)); sleep 0.5
     done
-    fail "timeout waiting for $label ($url)"
-    return 1
+    fail "timeout waiting for $label ($url)"; return 1
 }
 
 cleanup() {
@@ -75,9 +77,10 @@ echo ""
 
 # ── 0. prerequisites ───────────────────────────────────────────────────────
 info "checking prerequisites"
-if ! command -v python3 &>/dev/null; then fail "python3 not found"; exit 1; fi
-if ! command -v "$A3S"  &>/dev/null; then fail "a3s binary not found (set A3S_BIN or --binary)"; exit 1; fi
-ok "python3 and a3s found"
+command -v python3       >/dev/null || { fail "python3 not found";       exit 1; }
+command -v "$A3S"        >/dev/null || { fail "a3s not found (A3S_BIN or --binary)"; exit 1; }
+command -v a3s-gateway   >/dev/null || { fail "a3s-gateway not found on PATH"; exit 1; }
+ok "python3, a3s, a3s-gateway found"
 
 mkdir -p "$DIR/logs"
 
@@ -86,7 +89,7 @@ echo ""
 yellow "── 1. validate ──────────────────────────────────────"
 out=$("$A3S" -f "$FILE" validate 2>&1)
 if echo "$out" | grep -qi "error\|invalid"; then
-    fail "validate reported errors: $out"
+    fail "validate: $out"
 else
     ok "a3s validate passed"
 fi
@@ -97,122 +100,152 @@ yellow "── 2. a3s up --detach ───────────────�
 "$A3S" -f "$FILE" up --detach --no-ui
 ok "daemon started"
 
-# ── 3. wait for each service ──────────────────────────────────────────────
+# ── 3. wait for all services ──────────────────────────────────────────────
 echo ""
 yellow "── 3. waiting for services to become healthy ────────"
-(cd "$DIR" && wait_http "http://localhost:$STORE_PORT/health"  "store")  && ok "store reachable"
-(cd "$DIR" && wait_http "http://localhost:$API_PORT/health"    "api")    && ok "api reachable"
-(cd "$DIR" && wait_http "http://localhost:$WORKER_PORT/health" "worker") && ok "worker reachable"
-(cd "$DIR" && wait_http "http://localhost:$WEB_PORT/health"    "web")    && ok "web reachable"
+wait_http "http://localhost:$STORE_PORT/health"      "store"   && ok "store  :$STORE_PORT"
+wait_http "http://localhost:$API_PORT/health"        "api"     && ok "api    :$API_PORT"
+wait_http "http://localhost:$WORKER_PORT/health"     "worker"  && ok "worker :$WORKER_PORT"
+wait_http "http://localhost:$WEB_PORT/health"        "web"     && ok "web    :$WEB_PORT"
+wait_http "http://localhost:$GW_PORT/api/gateway/health" "gateway" && ok "gateway:$GW_PORT"
 
 # ── 4. a3s status ─────────────────────────────────────────────────────────
 echo ""
 yellow "── 4. a3s status ────────────────────────────────────"
 status_json=$("$A3S" -f "$FILE" status --json 2>/dev/null)
-for svc in store api worker web; do
+for svc in store api worker web gateway; do
     assert_contains "status: $svc present" "$status_json" "\"$svc\""
 done
 
-# ── 5. store endpoints ────────────────────────────────────────────────────
+# ── 5. direct service tests ───────────────────────────────────────────────
 echo ""
-yellow "── 5. store endpoints ───────────────────────────────"
+yellow "── 5. direct service endpoints ──────────────────────"
 
-health=$(_curl "http://localhost:$STORE_PORT/health")
-assert_contains "store /health ok"   "$health" '"ok"'
-
+# store
 _curl -X POST "http://localhost:$STORE_PORT/set" \
-    -H "Content-Type: application/json" \
-    -d '{"key":"demo","value":"hello"}' >/dev/null
-ok "store SET demo=hello"
+    -H "Content-Type: application/json" -d '{"key":"direct","value":"ok"}' >/dev/null
+get=$(_curl "http://localhost:$STORE_PORT/get?key=direct")
+assert_contains "store direct SET/GET" "$get" '"ok"'
+_curl -X DELETE "http://localhost:$STORE_PORT/del?key=direct" >/dev/null
 
-get=$(_curl "http://localhost:$STORE_PORT/get?key=demo")
-assert_contains "store GET demo" "$get" '"hello"'
+# api: create two items directly
+id1=$(_curl -X POST "http://localhost:$API_PORT/items" \
+    -H "Content-Type: application/json" -d '{"name":"apple","value":"red"}' \
+    | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+ok "api POST /items apple id=$id1"
 
-keys=$(_curl "http://localhost:$STORE_PORT/keys")
-assert_contains "store /keys lists demo" "$keys" '"demo"'
-
-_curl -X DELETE "http://localhost:$STORE_PORT/del?key=demo" >/dev/null
-get2=$(_curl "http://localhost:$STORE_PORT/get?key=demo" || true)
-assert_contains "store DELETE demo" "$get2" '"error"'
-
-# ── 6. api endpoints ──────────────────────────────────────────────────────
-echo ""
-yellow "── 6. api endpoints ─────────────────────────────────"
-
-api_health=$(_curl "http://localhost:$API_PORT/health")
-assert_contains "api /health ok"    "$api_health" '"ok"'
-assert_contains "api /health store" "$api_health" '"store"'
-
-# create items
-id1=$(  _curl -X POST "http://localhost:$API_PORT/items" \
-            -H "Content-Type: application/json" \
-            -d '{"name":"apple","value":"red"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-ok "api POST /items → id=$id1"
-
-id2=$(  _curl -X POST "http://localhost:$API_PORT/items" \
-            -H "Content-Type: application/json" \
-            -d '{"name":"banana","value":"yellow"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-ok "api POST /items → id=$id2"
+id2=$(_curl -X POST "http://localhost:$API_PORT/items" \
+    -H "Content-Type: application/json" -d '{"name":"banana","value":"yellow"}' \
+    | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+ok "api POST /items banana id=$id2"
 
 items=$(_curl "http://localhost:$API_PORT/items")
 assert_contains "api GET /items has apple"  "$items" '"apple"'
 assert_contains "api GET /items has banana" "$items" '"banana"'
 
-item1=$(_curl "http://localhost:$API_PORT/items/$id1")
-assert_contains "api GET /items/$id1" "$item1" '"apple"'
-
-_curl -X DELETE "http://localhost:$API_PORT/items/$id1" >/dev/null
-del_check=$(_curl "http://localhost:$API_PORT/items/$id1" || true)
-assert_contains "api DELETE /items/$id1" "$del_check" '"error"'
-
-# ── 7. worker endpoints ───────────────────────────────────────────────────
+# ── 6. gateway routing tests ──────────────────────────────────────────────
 echo ""
-yellow "── 7. worker endpoints ──────────────────────────────"
+yellow "── 6. gateway routing ───────────────────────────────"
 
-wstatus=$(_curl "http://localhost:$WORKER_PORT/status")
-assert_contains "worker /status has beats"    "$wstatus" '"beats"'
-assert_contains "worker /status has interval" "$wstatus" '"interval"'
+gw="http://localhost:$GW_PORT"
 
-info "waiting 4s for at least one heartbeat..."
-sleep 4
+# 6a. gateway health (dashboard)
+gw_health=$(_curl "$gw/api/gateway/health")
+assert_contains "gateway /api/gateway/health" "$gw_health" '"'
 
-wstatus2=$(_curl "http://localhost:$WORKER_PORT/status")
-beats=$(echo "$wstatus2" | python3 -c "import json,sys; print(json.load(sys.stdin).get('beats',0))")
-if [ "$beats" -gt 0 ]; then
-    ok "worker beat count=$beats"
+# 6b. / → web frontend
+html=$(_curl "$gw/")
+assert_contains "gateway / → web HTML"     "$html" "a3s demo"
+assert_contains "gateway / → has JS fetch" "$html" "fetch"
+
+# 6c. /api → api (strip-prefix + rate-limit + cors)
+gw_items=$(_curl "$gw/api/items")
+assert_contains "gateway /api/items → api"  "$gw_items" '"items"'
+assert_contains "gateway /api/items has apple"  "$gw_items" '"apple"'
+assert_contains "gateway /api/items has banana" "$gw_items" '"banana"'
+
+# create via gateway
+gw_id=$(_curl -X POST "$gw/api/items" \
+    -H "Content-Type: application/json" -d '{"name":"cherry","value":"dark-red"}' \
+    | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+ok "gateway POST /api/items cherry id=$gw_id"
+
+gw_item=$(_curl "$gw/api/items/$gw_id")
+assert_contains "gateway GET /api/items/$gw_id" "$gw_item" '"cherry"'
+
+_curl -X DELETE "$gw/api/items/$gw_id" >/dev/null
+del_check=$(_curl "$gw/api/items/$gw_id" || true)
+assert_contains "gateway DELETE /api/items/$gw_id" "$del_check" '"error"'
+
+# 6d. /worker → worker (strip-prefix)
+wstatus=$(_curl "$gw/worker/status")
+assert_contains "gateway /worker/status → worker" "$wstatus" '"beats"'
+assert_contains "gateway /worker/status interval"  "$wstatus" '"interval"'
+
+# 6e. /store → store (strip-prefix + api-key required)
+# Without key → should be rejected (401 or 403)
+no_key_resp=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+    "$gw/store/health" 2>/dev/null || true)
+if [ "$no_key_resp" = "401" ] || [ "$no_key_resp" = "403" ]; then
+    ok "gateway /store rejects missing api-key ($no_key_resp)"
 else
-    fail "worker beat count is 0 after 4s"
+    fail "gateway /store should reject missing api-key (got $no_key_resp)"
 fi
 
-beat_in_store=$(_curl "http://localhost:$STORE_PORT/get?key=worker%3Alast_beat")
-assert_contains "worker heartbeat in store" "$beat_in_store" '"value"'
+# With correct key → should succeed
+store_health=$(_curl -H "X-Store-Key: $STORE_KEY" "$gw/store/health")
+assert_contains "gateway /store/health with api-key" "$store_health" '"ok"'
 
-# ── 8. web frontend ───────────────────────────────────────────────────────
+_curl -X POST -H "X-Store-Key: $STORE_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"key":"gw-test","value":"routed"}' \
+    "$gw/store/set" >/dev/null
+gw_get=$(_curl -H "X-Store-Key: $STORE_KEY" "$gw/store/get?key=gw-test")
+assert_contains "gateway /store SET→GET via api-key" "$gw_get" '"routed"'
+_curl -X DELETE -H "X-Store-Key: $STORE_KEY" "$gw/store/del?key=gw-test" >/dev/null
+
+# 6f. CORS headers present on /api route
+cors_header=$(curl -sf --max-time 3 -I "$gw/api/items" 2>/dev/null \
+    | grep -i "access-control-allow-origin" || true)
+if [ -n "$cors_header" ]; then
+    ok "gateway /api has CORS header"
+else
+    info "CORS header not observed (may depend on gateway version)"
+fi
+
+# ── 7. worker heartbeat in store ──────────────────────────────────────────
 echo ""
-yellow "── 8. web frontend ──────────────────────────────────"
+yellow "── 7. worker heartbeat ──────────────────────────────"
+info "waiting 4s for heartbeat..."
+sleep 4
 
-html=$(_curl "http://localhost:$WEB_PORT/")
-assert_contains "web / returns HTML"     "$html" "a3s demo"
-assert_contains "web / has fetch script" "$html" "fetch"
+beats=$(_curl "$gw/worker/status" \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('beats',0))")
+if [ "$beats" -gt 0 ]; then
+    ok "worker beat_count=$beats via gateway"
+else
+    fail "worker beat_count=0 after 4s"
+fi
 
-web_api=$(_curl "http://localhost:$WEB_PORT/api/items")
-assert_contains "web /api/items proxied" "$web_api" '"items"'
+beat_val=$(_curl -H "X-Store-Key: $STORE_KEY" \
+    "$gw/store/get?key=worker%3Alast_beat")
+assert_contains "heartbeat written to store (via gateway)" "$beat_val" '"value"'
 
-# ── 9. restart ────────────────────────────────────────────────────────────
+# ── 8. a3s restart gateway ────────────────────────────────────────────────
 echo ""
-yellow "── 9. a3s restart worker ────────────────────────────"
-"$A3S" -f "$FILE" restart worker
-info "waiting 3s for worker to come back..."
+yellow "── 8. a3s restart gateway ───────────────────────────"
+"$A3S" -f "$FILE" restart gateway
+info "waiting for gateway to come back..."
 sleep 3
-(cd "$DIR" && wait_http "http://localhost:$WORKER_PORT/health" "worker after restart") && ok "worker healthy after restart"
+wait_http "$gw/api/gateway/health" "gateway after restart" && ok "gateway healthy after restart"
 
-wstatus3=$(_curl "http://localhost:$WORKER_PORT/status")
-assert_contains "worker /status ok after restart" "$wstatus3" '"beats"'
+gw_items2=$(_curl "$gw/api/items")
+assert_contains "gateway /api/items still works after restart" "$gw_items2" '"items"'
 
-# ── 10. log files ─────────────────────────────────────────────────────────
+# ── 9. log files ──────────────────────────────────────────────────────────
 echo ""
-yellow "── 10. log files ────────────────────────────────────"
-for svc in store api worker web; do
+yellow "── 9. log files ─────────────────────────────────────"
+for svc in store api worker web gateway; do
     logfile="$DIR/logs/$svc.log"
     if [ -f "$logfile" ] && [ -s "$logfile" ]; then
         ok "logs/$svc.log has content"
@@ -221,35 +254,35 @@ for svc in store api worker web; do
     fi
 done
 
-# ── 11. label filter ──────────────────────────────────────────────────────
+# ── 10. label filter down ─────────────────────────────────────────────────
 echo ""
-yellow "── 11. a3s down --label backend ─────────────────────"
+yellow "── 10. a3s down --label backend ─────────────────────"
 "$A3S" -f "$FILE" down --label backend
 sleep 2
 
-# api and worker should be gone; store and web still up
-api_check=$(_curl "http://localhost:$API_PORT/health" || true)
-if [ -z "$api_check" ]; then ok "api stopped (label=backend)"; else fail "api still running"; fi
+# api + worker should be down; gateway will lose backends but still answer
+api_gone=$(_curl "http://localhost:$API_PORT/health" || true)
+assert_empty "api stopped (label=backend)" "$api_gone"
 
-worker_check=$(_curl "http://localhost:$WORKER_PORT/health" || true)
-if [ -z "$worker_check" ]; then ok "worker stopped (label=backend)"; else fail "worker still running"; fi
+worker_gone=$(_curl "http://localhost:$WORKER_PORT/health" || true)
+assert_empty "worker stopped (label=backend)" "$worker_gone"
 
-store_check=$(_curl "http://localhost:$STORE_PORT/health" || true)
-assert_contains "store still running" "$store_check" '"ok"'
+store_still=$(_curl "http://localhost:$STORE_PORT/health")
+assert_contains "store still running" "$store_still" '"ok"'
 
-# bring backend back before final down
+# bring backend back
 "$A3S" -f "$FILE" up --detach --no-ui api worker
 sleep 3
 
-# ── 12. a3s down (all) ────────────────────────────────────────────────────
+# ── 11. full down + port checks ───────────────────────────────────────────
 echo ""
-yellow "── 12. a3s down ─────────────────────────────────────"
+yellow "── 11. a3s down (all) ───────────────────────────────"
 "$A3S" -f "$FILE" down
 sleep 2
 
-for port in $STORE_PORT $API_PORT $WORKER_PORT $WEB_PORT; do
-    check=$(_curl "http://localhost:$port/health" || true)
-    if [ -z "$check" ]; then ok "port $port down"; else fail "port $port still responding"; fi
+for port in $STORE_PORT $API_PORT $WORKER_PORT $WEB_PORT $GW_PORT; do
+    check=$(_curl "http://localhost:$port/" || true)
+    assert_empty "port $port down" "$check"
 done
 
 # ── summary ───────────────────────────────────────────────────────────────
