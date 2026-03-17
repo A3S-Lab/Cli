@@ -8,12 +8,12 @@ sha_macos_x64   = os.environ["SHA_MACOS_X64"]
 sha_linux_arm64 = os.environ["SHA_LINUX_ARM64"]
 sha_linux_x64   = os.environ["SHA_LINUX_X64"]
 
-base = f"https://github.com/A3S-Lab/Dev/releases/download/v{ver}"
+base = f"https://github.com/A3S-Lab/Cli/releases/download/v{ver}"
 
 formula = (
     'class A3s < Formula\n'
-    '  desc "Local development orchestration tool for the A3S monorepo"\n'
-    '  homepage "https://github.com/A3S-Lab/Dev"\n'
+    '  desc "Command-line interface for the A3S platform"\n'
+    '  homepage "https://github.com/A3S-Lab/Cli"\n'
     f'  version "{ver}"\n'
     '  license "MIT"\n'
     '\n'

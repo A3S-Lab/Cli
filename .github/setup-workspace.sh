@@ -4,19 +4,19 @@
 # a3s depends on one path crate from the a3s monorepo:
 #   ../updater  → a3s-updater
 #
-# Before: ./ = Dev repo root
-# After:  ./ = workspace root with crates/dev/, crates/updater/
+# Before: ./ = Cli repo root
+# After:  ./ = workspace root with crates/cli/, crates/updater/
 
 set -euo pipefail
 
 TMPDIR="$(mktemp -d)"
-cp -a . "$TMPDIR/dev"
+cp -a . "$TMPDIR/cli"
 
 # Clean current directory (except .git)
 find . -maxdepth 1 ! -name '.' ! -name '.git' -exec rm -rf {} +
 
 mkdir -p crates
-cp -a "$TMPDIR/dev/." crates/dev/
+cp -a "$TMPDIR/cli/." crates/cli/
 rm -rf "$TMPDIR"
 
 # Fetch updater from the monorepo via sparse-checkout
@@ -30,7 +30,7 @@ cat > Cargo.toml << 'EOF'
 [workspace]
 resolver = "2"
 members = [
-    "crates/dev",
+    "crates/cli",
     "crates/updater",
 ]
 
@@ -42,4 +42,4 @@ strip = "symbols"
 panic = "abort"
 EOF
 
-echo "Workspace ready. a3s at: crates/dev/"
+echo "Workspace ready. a3s at: crates/cli/"

@@ -4,7 +4,7 @@ version = "0.1.4"
 edition = "2021"
 authors = ["A3S Lab"]
 license = "MIT"
-description = "a3s dev — local development orchestration tool for the A3S monorepo"
+description = "a3s cli — command-line interface for the A3S platform"
 
 [[bin]]
 name = "a3s"
