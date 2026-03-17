@@ -7,3 +7,4 @@ src/ui/dist
 .env.*
 A3sfile.hcl
 !src/A3sfile.hcl
+!demo/A3sfile.hcl
