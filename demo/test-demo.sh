@@ -45,6 +45,14 @@ assert_empty() {
 
 _curl() { curl -sf --max-time 3 "$@" 2>/dev/null || true; }
 
+# Extract a field from a JSON string; returns empty string on any error.
+json_field() {
+    local json="$1" field="$2"
+    printf '%s' "$json" \
+        | python3 -c "import json,sys; print(json.load(sys.stdin).get('$field',''))" \
+        2>/dev/null || true
+}
+
 wait_http() {
     local url="$1" label="$2" tries=0
     while [ $tries -lt 30 ]; do
@@ -116,6 +124,11 @@ trap cleanup EXIT
 
 mkdir -p "$DIR/logs"
 
+# ── pre-test cleanup: stop any services left from a previous run ───────────
+info "pre-test cleanup (stop any stale services)"
+"$A3S" -f "$FILE" down 2>/dev/null || true
+sleep 1
+
 # ── 1. validate ────────────────────────────────────────────────────────────
 echo ""
 yellow "── 1. validate ──────────────────────────────────────"
@@ -154,22 +167,23 @@ echo ""
 yellow "── 5. direct service endpoints ──────────────────────"
 
 # store
-_curl -X POST "http://localhost:$STORE_PORT/set" \
-    -H "Content-Type: application/json" -d '{"key":"direct","value":"ok"}' >/dev/null
+set_resp=$(_curl -X POST "http://localhost:$STORE_PORT/set" \
+    -H "Content-Type: application/json" -d '{"key":"direct","value":"ok"}')
+assert_contains "store POST /set"      "$set_resp" '"ok"'
 get=$(_curl "http://localhost:$STORE_PORT/get?key=direct")
-assert_contains "store direct SET/GET" "$get" '"ok"'
+assert_contains "store GET /get"       "$get"       '"ok"'
 _curl -X DELETE "http://localhost:$STORE_PORT/del?key=direct" >/dev/null
 
 # api: create two items directly
-id1=$(_curl -X POST "http://localhost:$API_PORT/items" \
-    -H "Content-Type: application/json" -d '{"name":"apple","value":"red"}' \
-    | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-ok "api POST /items apple id=$id1"
+resp1=$(_curl -X POST "http://localhost:$API_PORT/items" \
+    -H "Content-Type: application/json" -d '{"name":"apple","value":"red"}')
+assert_contains "api POST /items apple" "$resp1" '"apple"'
+id1="$(json_field "$resp1" id)"
 
-id2=$(_curl -X POST "http://localhost:$API_PORT/items" \
-    -H "Content-Type: application/json" -d '{"name":"banana","value":"yellow"}' \
-    | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-ok "api POST /items banana id=$id2"
+resp2=$(_curl -X POST "http://localhost:$API_PORT/items" \
+    -H "Content-Type: application/json" -d '{"name":"banana","value":"yellow"}')
+assert_contains "api POST /items banana" "$resp2" '"banana"'
+id2="$(json_field "$resp2" id)"
 
 items=$(_curl "http://localhost:$API_PORT/items")
 assert_contains "api GET /items has apple"  "$items" '"apple"'
@@ -197,10 +211,10 @@ assert_contains "gateway /api/items has apple"  "$gw_items" '"apple"'
 assert_contains "gateway /api/items has banana" "$gw_items" '"banana"'
 
 # create via gateway
-gw_id=$(_curl -X POST "$gw/api/items" \
-    -H "Content-Type: application/json" -d '{"name":"cherry","value":"dark-red"}' \
-    | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-ok "gateway POST /api/items cherry id=$gw_id"
+gw_resp=$(_curl -X POST "$gw/api/items" \
+    -H "Content-Type: application/json" -d '{"name":"cherry","value":"dark-red"}')
+assert_contains "gateway POST /api/items cherry" "$gw_resp" '"cherry"'
+gw_id="$(json_field "$gw_resp" id)"
 
 gw_item=$(_curl "$gw/api/items/$gw_id")
 assert_contains "gateway GET /api/items/$gw_id" "$gw_item" '"cherry"'
@@ -251,9 +265,8 @@ yellow "── 7. worker heartbeat ───────────────
 info "waiting 4s for heartbeat..."
 sleep 4
 
-beats=$(_curl "$gw/worker/status" \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('beats',0))")
-if [ "$beats" -gt 0 ]; then
+beats="$(json_field "$(_curl "$gw/worker/status")" beats)"
+if [ "${beats:-0}" -gt 0 ]; then
     ok "worker beat_count=$beats via gateway"
 else
     fail "worker beat_count=0 after 4s"
@@ -320,14 +333,14 @@ yellow "── 11. env() defaults (no OS env vars set) ────────�
 
 w_status=$(_curl "http://localhost:$WORKER_PORT/status")
 
-w_interval=$(echo "$w_status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('interval',''))")
+w_interval="$(json_field "$w_status" interval)"
 if [ "$w_interval" = "3" ]; then
     ok "env(WORKER_INTERVAL) default=3"
 else
     fail "env(WORKER_INTERVAL) expected default 3, got '$w_interval'"
 fi
 
-w_appenv=$(echo "$w_status" | python3 -c "import json,sys; print(json.load(sys.stdin).get('app_env',''))")
+w_appenv="$(json_field "$w_status" app_env)"
 if [ "$w_appenv" = "development" ]; then
     ok "env(APP_ENV) default=development"
 else
@@ -356,14 +369,14 @@ wait_http "http://localhost:$WORKER_PORT/health" "worker (override run)"
 
 w_status2=$(_curl "http://localhost:$WORKER_PORT/status")
 
-w_interval2=$(echo "$w_status2" | python3 -c "import json,sys; print(json.load(sys.stdin).get('interval',''))")
+w_interval2="$(json_field "$w_status2" interval)"
 if [ "$w_interval2" = "2" ]; then
     ok "env(WORKER_INTERVAL) override=2"
 else
     fail "env(WORKER_INTERVAL) expected override 2, got '$w_interval2'"
 fi
 
-w_appenv2=$(echo "$w_status2" | python3 -c "import json,sys; print(json.load(sys.stdin).get('app_env',''))")
+w_appenv2="$(json_field "$w_status2" app_env)"
 if [ "$w_appenv2" = "staging" ]; then
     ok "env(APP_ENV) override=staging"
 else
