@@ -64,7 +64,7 @@ fn default_log_level() -> String {
     "info".into()
 }
 fn default_runtime() -> String {
-    "local".into()
+    "box".into()
 }
 fn default_k8s_namespace() -> String {
     "default".into()
@@ -132,6 +132,9 @@ pub struct ServiceDef {
     /// Kubernetes-specific configuration (only used when runtime = "k8s").
     #[serde(default)]
     pub k8s: Option<K8sConfig>,
+    /// Box-specific configuration (only used when runtime = "box").
+    #[serde(default)]
+    pub r#box: Option<BoxConfig>,
 }
 
 /// Kubernetes-specific configuration for a service.
@@ -212,6 +215,15 @@ pub struct K8sResources {
 
 fn default_replicas() -> u32 {
     1
+}
+
+/// Box-specific configuration for a service (used when runtime = "box").
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct BoxConfig {
+    /// Container image to use (e.g., "python:3.12-slim", "node:20-alpine").
+    /// If not set, an image is auto-detected from the service command.
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 /// Crash-recovery restart policy for a service.
@@ -665,6 +677,7 @@ mod tests {
             disabled: false,
             labels: vec![],
             k8s: None,
+            r#box: None,
         }
     }
 

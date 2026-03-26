@@ -171,7 +171,7 @@ async fn main() {
     let log_level = if matches!(cli.command, Commands::Up { .. }) {
         std::fs::read_to_string(&cli.file)
             .ok()
-            .and_then(|s| hcl::from_str::<config::DevConfig>(&s).ok())
+            .and_then(|s| hcl::from_str::<config::DevConfig>(&config::expand_env_func(&s)).ok())
             .map(|c| c.dev.log_level)
             .unwrap_or_else(|| "info".into())
     } else {
@@ -294,8 +294,9 @@ async fn run(cli: Cli) -> Result<()> {
                 .await;
             }
 
-            // Local process mode (default)
-            println!("{} runtime: local", "→".cyan());
+            // Local / box process mode (default)
+            let runtime_label = if cfg.dev.runtime == "box" { "box" } else { "local" };
+            println!("{} runtime: {runtime_label}", "→".cyan());
 
             // Start proxy
             let proxy = if cfg.dev.https {

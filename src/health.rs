@@ -125,6 +125,7 @@ mod tests {
             disabled: false,
             labels: vec![],
             k8s: None,
+            r#box: None,
         }
     }
 

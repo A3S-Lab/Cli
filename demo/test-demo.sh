@@ -56,7 +56,7 @@ json_field() {
 wait_http() {
     local url="$1" label="$2" tries=0
     while [ $tries -lt 30 ]; do
-        if _curl "$url" >/dev/null; then return 0; fi
+        if curl -sf --max-time 3 "$url" >/dev/null 2>/dev/null; then return 0; fi
         tries=$((tries+1)); sleep 0.5
     done
     fail "timeout waiting for $label ($url)"; return 1
@@ -305,7 +305,7 @@ yellow "── 10. a3s down --label backend ────────────
 "$A3S" -f "$FILE" down --label backend
 sleep 2
 
-# api + worker should be down; gateway will lose backends but still answer
+# api + worker should be down (web + gateway cascade-stopped too)
 api_gone=$(_curl "http://localhost:$API_PORT/health" || true)
 assert_empty "api stopped (label=backend)" "$api_gone"
 
@@ -315,9 +315,15 @@ assert_empty "worker stopped (label=backend)" "$worker_gone"
 store_still=$(_curl "http://localhost:$STORE_PORT/health")
 assert_contains "store still running" "$store_still" '"ok"'
 
-# bring backend back
-"$A3S" -f "$FILE" up --detach --no-ui api worker
+# bring backend (and cascade-stopped web/gateway) back via the existing daemon
+# Using restart so we stay with the same daemon process — avoids orphaned store.
+# restart api cascades to restart web and gateway too.
+"$A3S" -f "$FILE" restart api
+sleep 1
+"$A3S" -f "$FILE" restart worker
 sleep 3
+wait_http "http://localhost:$WORKER_PORT/health" "worker (after backend restart)"
+wait_http "http://localhost:$GW_PORT/api/gateway/health" "gateway (after backend restart)"
 
 # ── 11. env() function — default values ──────────────────────────────────
 #

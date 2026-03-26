@@ -325,6 +325,7 @@ impl Supervisor {
                 .config_path
                 .parent()
                 .unwrap_or(std::path::Path::new(".")),
+            runtime: &cfg.dev.runtime,
         };
         let result = spawn_process(&spec, &self.log).await?;
 
@@ -473,6 +474,18 @@ impl Supervisor {
             let _ = kill(pgid, Signal::SIGKILL);
         }
         let _ = child.kill().await;
+
+        // For box runtime, force-remove the named container so the port is freed.
+        if self.cfg().dev.runtime == "box" {
+            let container_name = format!("a3s-{name}");
+            tokio::process::Command::new("a3s-box")
+                .args(["rm", "-f", &container_name])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await
+                .ok();
+        }
 
         // Run post_stop hook after the process is gone.
         if let Some(svc) = svc_def {
@@ -708,9 +721,30 @@ impl Supervisor {
 
                 tokio::time::sleep(backoff).await;
 
-                let svc_def = match config_cell.read().unwrap().service.get(&svc_name) {
-                    Some(s) => s.clone(),
-                    None => break,
+                // Check that the service wasn't stopped during the backoff sleep.
+                {
+                    let map = handles.read().await;
+                    match map.get(&svc_name) {
+                        Some(h)
+                            if matches!(
+                                h.state,
+                                ServiceState::Stopped | ServiceState::Failed { .. }
+                            ) =>
+                        {
+                            break;
+                        }
+                        None => break,
+                        _ => {}
+                    }
+                }
+
+                let (svc_def, runtime) = {
+                    let cfg = config_cell.read().unwrap();
+                    let s = match cfg.service.get(&svc_name) {
+                        Some(s) => s.clone(),
+                        None => break,
+                    };
+                    (s, cfg.dev.runtime.clone())
                 };
                 // Use originally assigned port — avoids re-assigning a new port for port=0 services
                 let port = if assigned_port > 0 {
@@ -736,6 +770,7 @@ impl Supervisor {
                     port,
                     color_idx,
                     config_dir: &config_dir,
+                    runtime: &runtime,
                 };
                 match spawn_process(&spec, &log).await {
                     Ok(result) => {
@@ -829,9 +864,13 @@ impl Supervisor {
                     state: "restarting".into(),
                 });
 
-                let svc_def = match config_cell.read().unwrap().service.get(&changed_svc) {
-                    Some(s) => s.clone(),
-                    None => continue,
+                let (svc_def, runtime) = {
+                    let cfg = config_cell.read().unwrap();
+                    let s = match cfg.service.get(&changed_svc) {
+                        Some(s) => s.clone(),
+                        None => continue,
+                    };
+                    (s, cfg.dev.runtime.clone())
                 };
 
                 let spec = SpawnSpec {
@@ -840,6 +879,7 @@ impl Supervisor {
                     port,
                     color_idx,
                     config_dir: &config_dir,
+                    runtime: &runtime,
                 };
                 match spawn_process(&spec, &log).await {
                     Ok(result) => {
@@ -960,6 +1000,7 @@ mod tests {
             disabled: false,
             labels: vec![],
             k8s: None,
+            r#box: None,
         }
     }
 

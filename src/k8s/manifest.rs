@@ -545,6 +545,7 @@ mod tests {
                 secrets: HashMap::new(),
                 volumes: vec![],
             }),
+            r#box: None,
         }
     }
 

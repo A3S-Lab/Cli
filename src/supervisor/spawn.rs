@@ -14,6 +14,8 @@ pub struct SpawnSpec<'a> {
     pub color_idx: usize,
     /// Directory containing A3sfile.hcl — used to resolve relative `log_file` paths.
     pub config_dir: &'a std::path::Path,
+    /// Runtime mode: "local" or "box".
+    pub runtime: &'a str,
 }
 
 pub struct SpawnResult {
@@ -44,6 +46,72 @@ pub(super) async fn run_hook(hook: &str, svc: &ServiceDef, label: &str) -> Resul
     Ok(())
 }
 
+/// Auto-detect a container image from the service command.
+/// Returns a best-guess base image. Services with an explicit `box.image` override this.
+fn box_image(svc: &ServiceDef) -> &'static str {
+    if let Some(ref b) = svc.r#box {
+        if b.image.is_some() {
+            return ""; // caller handles the Some case
+        }
+    }
+    let cmd = svc.cmd.trim();
+    if cmd.starts_with("python3") || cmd.starts_with("python") {
+        "python:3.12-slim"
+    } else if cmd.starts_with("node") || cmd.starts_with("npx") {
+        "node:20-alpine"
+    } else if cmd.starts_with("bun") || cmd.starts_with("bunx") {
+        "oven/bun:latest"
+    } else if cmd.starts_with("deno") {
+        "denoland/deno:latest"
+    } else if cmd.starts_with("ruby") {
+        "ruby:3.3-slim"
+    } else if cmd.starts_with("php") {
+        "php:8.3-cli-alpine"
+    } else if cmd.starts_with("go ") || cmd.starts_with("go\t") {
+        "golang:1.22-alpine"
+    } else {
+        "ubuntu:24.04"
+    }
+}
+
+/// Build the `a3s-box run` argument list that wraps the service command.
+fn build_box_args(spec: &SpawnSpec<'_>, workdir: &str) -> Vec<String> {
+    let image = if let Some(ref b) = spec.svc.r#box {
+        if let Some(ref img) = b.image {
+            img.as_str().to_owned()
+        } else {
+            box_image(spec.svc).to_owned()
+        }
+    } else {
+        box_image(spec.svc).to_owned()
+    };
+
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "--rm".into(),
+        "--name".into(),
+        format!("a3s-{}", spec.name),
+        "-p".into(),
+        format!("{}:{}", spec.port, spec.port),
+        "-e".into(),
+        format!("PORT={}", spec.port),
+        "-e".into(),
+        "HOST=0.0.0.0".into(),
+        "-v".into(),
+        format!("{workdir}:/workspace"),
+        "-w".into(),
+        "/workspace".into(),
+    ];
+    for (k, v) in &spec.svc.env {
+        args.push("-e".into());
+        args.push(format!("{k}={v}"));
+    }
+    args.push(image);
+    // append the original command tokens
+    args.extend(split_cmd(&spec.svc.cmd));
+    args
+}
+
 /// Spawn a service process, attach stdout to the log aggregator, and return the child.
 /// Stderr is forwarded to the log aggregator as well.
 pub async fn spawn_process(spec: &SpawnSpec<'_>, log: &Arc<LogAggregator>) -> Result<SpawnResult> {
@@ -53,19 +121,45 @@ pub async fn spawn_process(spec: &SpawnSpec<'_>, log: &Arc<LogAggregator>) -> Re
         run_hook(hook, spec.svc, spec.name).await?;
     }
 
-    let parts = split_cmd(&spec.svc.cmd);
-    let program = parts.first().map(|s| s.as_str()).unwrap_or("sh");
-    let args = &parts[1..];
-    let extra_args = framework_port_args(&parts, spec.port);
+    // Build program + args depending on runtime.
+    let (program, args, extra_args) = if spec.runtime == "box" {
+        // Remove any stale container with the same name before starting.
+        let container_name = format!("a3s-{}", spec.name);
+        tokio::process::Command::new("a3s-box")
+            .args(["rm", "-f", &container_name])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .ok();
+        let workdir = spec
+            .svc
+            .dir
+            .as_ref()
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_else(|| spec.config_dir.to_string_lossy().into_owned());
+        let box_args = build_box_args(spec, &workdir);
+        let prog = "a3s-box".to_owned();
+        (prog, box_args, vec![])
+    } else {
+        let parts = split_cmd(&spec.svc.cmd);
+        let prog = parts.first().map(|s| s.as_str()).unwrap_or("sh").to_owned();
+        let extra = framework_port_args(&parts, spec.port);
+        (prog, parts[1..].to_vec(), extra)
+    };
 
-    let mut cmd = Command::new(program);
-    cmd.args(args)
+    let mut cmd = Command::new(&program);
+    cmd.args(&args)
         .args(&extra_args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .envs(&spec.svc.env)
-        .env("PORT", spec.port.to_string())
-        .env("HOST", "127.0.0.1");
+        .stderr(std::process::Stdio::piped());
+
+    // For local mode, inject envs and PORT/HOST directly; box mode injects them via CLI flags.
+    if spec.runtime != "box" {
+        cmd.envs(&spec.svc.env)
+            .env("PORT", spec.port.to_string())
+            .env("HOST", "127.0.0.1");
+    }
 
     if let Some(dir) = &spec.svc.dir {
         cmd.current_dir(dir);
